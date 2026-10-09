@@ -87,7 +87,7 @@ function setHookStatus(sessionId: string, status: SessionStatus, detail: string,
   hookStatus.set(sessionId, { status, detail, at: Date.now(), cwd });
 }
 
-const STATUS_ORDER: Record<SessionStatus, number> = { waiting: 0, done: 1, working: 2, idle: 3 };
+const STATUS_ORDER: Record<SessionStatus, number> = { failing: 0, waiting: 1, done: 1, working: 2, idle: 3 };
 
 async function buildState(): Promise<DeckState> {
   const fromTranscripts = await scanSessions();

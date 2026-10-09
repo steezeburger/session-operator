@@ -1,38 +1,29 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Behavior, DeckState, PendingDecision, Session, SessionStatus } from "../../server/types.ts";
 
-const STATUS_STYLE: Record<SessionStatus, { label: string; dot: string; pill: string; next: string }> = {
-  waiting: {
-    label: "Needs you",
-    dot: "bg-amber-500",
-    pill: "bg-amber-100 text-amber-900 dark:bg-amber-500/15 dark:text-amber-300",
-    next: "Answer it here or in the terminal",
-  },
-  done: {
-    label: "Your move",
-    dot: "bg-emerald-500",
-    pill: "bg-emerald-100 text-emerald-900 dark:bg-emerald-500/15 dark:text-emerald-300",
-    next: "Read the result and reply",
-  },
-  working: {
-    label: "Working",
-    dot: "bg-sky-500 animate-pulse",
-    pill: "bg-sky-100 text-sky-900 dark:bg-sky-500/15 dark:text-sky-300",
-    next: "Nothing to do, let it run",
-  },
-  idle: {
-    label: "Idle",
-    dot: "bg-stone-400",
-    pill: "bg-stone-200 text-stone-700 dark:bg-stone-800 dark:text-stone-400",
-    next: "Nothing to do",
-  },
+// Four meanings only: orange = needs Jesse, red = failing, green = running, gray = idle.
+const NEEDS_YOU = "bg-orange-500 text-black";
+const STATUS_STYLE: Record<SessionStatus, { label: string; block: string; next: string }> = {
+  waiting: { label: "NEEDS YOU", block: NEEDS_YOU, next: "Answer it" },
+  done: { label: "YOUR MOVE", block: NEEDS_YOU, next: "Read + reply" },
+  failing: { label: "FAILING", block: "bg-red-600 text-white", next: "Check on it" },
+  working: { label: "WORKING", block: "bg-green-600 text-white", next: "Let it run" },
+  idle: { label: "IDLE", block: "bg-stone-400 text-black dark:bg-stone-600 dark:text-white", next: "-" },
 };
+
+const GROUPS: { key: string; title: string; statuses: SessionStatus[]; color: string }[] = [
+  { key: "needs", title: "Needs you", statuses: ["waiting", "done"], color: "bg-orange-500" },
+  { key: "failing", title: "Failing", statuses: ["failing"], color: "bg-red-600" },
+  { key: "working", title: "Working", statuses: ["working"], color: "bg-green-600" },
+];
+
+const BORDER = "border-2 border-black dark:border-white";
 
 function ago(iso: string, now: number) {
   const s = Math.max(0, Math.round((now - new Date(iso).getTime()) / 1000));
-  if (s < 60) return `${s}s ago`;
-  if (s < 3600) return `${Math.round(s / 60)}m ago`;
-  return `${Math.round(s / 3600)}h ago`;
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.round(s / 60)}m`;
+  return `${Math.round(s / 3600)}h`;
 }
 
 function useNow(ms = 1000) {
@@ -73,73 +64,86 @@ function useDeckState() {
   return { state, offline, refresh };
 }
 
+function GroupHeader({ title, count, color }: { title: string; count: number; color: string }) {
+  return (
+    <h2 className="mb-1 flex items-center gap-2 text-xs font-bold uppercase tracking-widest">
+      <span className={`inline-block h-2.5 w-2.5 ${color}`} />
+      {title} [{count}]
+    </h2>
+  );
+}
+
 function PendingCard({ p, now, onDecide }: { p: PendingDecision; now: number; onDecide: (b: Behavior) => void }) {
   const left = Math.max(0, Math.round((new Date(p.expiresAt).getTime() - now) / 1000));
   const input = JSON.stringify(p.toolInput, null, 2);
   const project = p.cwd.split("/").filter(Boolean).pop() ?? p.cwd;
   return (
-    <article className="rounded-2xl border-2 border-amber-400 bg-white p-6 shadow-sm dark:border-amber-500/60 dark:bg-stone-900">
-      <div className="flex items-baseline justify-between gap-4">
-        <h3 className="text-lg font-semibold">
-          {project} wants to run <span className="font-mono">{p.toolName}</span>
-        </h3>
-        <span className="shrink-0 text-sm text-stone-500">falls back to terminal in {left}s</span>
+    <article className={`${BORDER} flex bg-white dark:bg-black`}>
+      <div className="w-2 shrink-0 bg-orange-500" />
+      <div className="min-w-0 flex-1 p-2">
+        <div className="flex items-baseline justify-between gap-4 text-xs uppercase">
+          <span className="font-bold">
+            {project} → {p.toolName}
+          </span>
+          <span>terminal fallback {left}s</span>
+        </div>
+        <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all bg-black px-2 py-1 text-xs text-white dark:bg-white dark:text-black">
+          {p.summary}
+        </pre>
+        {input && input !== JSON.stringify(p.summary) && (
+          <details className="mt-1 text-xs">
+            <summary className="cursor-pointer uppercase">Full tool input</summary>
+            <pre className={`${BORDER} mt-1 max-h-64 overflow-auto p-2`}>{input}</pre>
+          </details>
+        )}
+        <div className="mt-2 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => onDecide("allow")}
+            className={`${BORDER} bg-green-600 px-5 py-1 text-sm font-bold uppercase text-white hover:bg-green-700`}
+          >
+            Approve
+          </button>
+          <button
+            type="button"
+            onClick={() => onDecide("deny")}
+            className={`${BORDER} bg-red-600 px-5 py-1 text-sm font-bold uppercase text-white hover:bg-red-700`}
+          >
+            Deny
+          </button>
+          <span className="ml-2 truncate text-xs opacity-60">{p.cwd}</span>
+        </div>
       </div>
-      <pre className="mt-4 overflow-x-auto whitespace-pre-wrap break-all rounded-lg bg-stone-100 p-4 font-mono text-sm dark:bg-stone-800">
-        {p.summary}
-      </pre>
-      {input && input !== JSON.stringify(p.summary) && (
-        <details className="mt-3 text-sm text-stone-500">
-          <summary className="cursor-pointer">Full tool input</summary>
-          <pre className="mt-2 max-h-64 overflow-auto rounded-lg bg-stone-100 p-4 font-mono text-xs dark:bg-stone-800">
-            {input}
-          </pre>
-        </details>
-      )}
-      <div className="mt-6 flex gap-3">
-        <button
-          type="button"
-          onClick={() => onDecide("allow")}
-          className="rounded-lg bg-emerald-600 px-6 py-2.5 font-medium text-white hover:bg-emerald-700"
-        >
-          Approve
-        </button>
-        <button
-          type="button"
-          onClick={() => onDecide("deny")}
-          className="rounded-lg border border-stone-300 px-6 py-2.5 font-medium hover:bg-stone-100 dark:border-stone-700 dark:hover:bg-stone-800"
-        >
-          Deny
-        </button>
-      </div>
-      <p className="mt-3 text-xs text-stone-500">{p.cwd}</p>
     </article>
   );
 }
 
-function SessionCard({ s, now }: { s: Session; now: number }) {
+function SessionRow({ s, now }: { s: Session; now: number }) {
   const style = STATUS_STYLE[s.status];
+  const next = s.status === "waiting" || s.status === "failing" ? s.statusDetail : style.next;
   return (
-    <article className="rounded-2xl border border-stone-200 bg-white p-6 dark:border-stone-800 dark:bg-stone-900">
-      <div className="flex items-center justify-between gap-4">
-        <div className="min-w-0">
-          <h3 className="truncate text-lg font-semibold">{s.title ?? s.project}</h3>
-          <p className="truncate text-sm text-stone-500">
-            {s.project}
-            {s.branch && <span className="font-mono"> · {s.branch}</span>}
-          </p>
-        </div>
-        <span className={`flex shrink-0 items-center gap-2 rounded-full px-3 py-1 text-sm font-medium ${style.pill}`}>
-          <span className={`h-2 w-2 rounded-full ${style.dot}`} />
-          {style.label}
-        </span>
+    <div className="grid grid-cols-[5.5rem_1fr_2.5rem] items-stretch text-xs leading-tight md:grid-cols-[5.5rem_16rem_1fr_10rem_2.5rem]">
+      <div className={`px-1.5 py-0.5 font-bold ${style.block}`}>{style.label}</div>
+      <div className="min-w-0 truncate px-1.5 py-0.5" title={s.cwd}>
+        <span className="font-bold">{s.project}</span>
+        {s.branch && <span className="opacity-60"> {s.branch}</span>}
       </div>
-      {s.lastPrompt && <p className="mt-4 line-clamp-2 text-stone-600 dark:text-stone-400">“{s.lastPrompt}”</p>}
-      <div className="mt-4 flex items-baseline justify-between gap-4 text-sm">
-        <span className="font-medium">→ {s.status === "waiting" ? s.statusDetail : style.next}</span>
-        <span className="shrink-0 text-stone-500">{ago(s.lastActivity, now)}</span>
+      <div className="hidden min-w-0 truncate px-1.5 py-0.5 md:block" title={s.lastPrompt ?? undefined}>
+        {s.title ?? "-"}
       </div>
-    </article>
+      <div className="hidden truncate px-1.5 py-0.5 font-bold uppercase md:block">{next}</div>
+      <div className="px-1.5 py-0.5 text-right">{ago(s.lastActivity, now)}</div>
+    </div>
+  );
+}
+
+function SessionTable({ sessions, now }: { sessions: Session[]; now: number }) {
+  return (
+    <div className={`${BORDER} divide-y divide-black bg-white dark:divide-white dark:bg-black`}>
+      {sessions.map((s) => (
+        <SessionRow key={s.id} s={s} now={now} />
+      ))}
+    </div>
   );
 }
 
@@ -157,23 +161,22 @@ export function App() {
   };
 
   const sessions = state?.sessions ?? [];
-  const active = sessions.filter((s) => s.status !== "idle");
   const idle = sessions.filter((s) => s.status === "idle");
   const pending = state?.pending ?? [];
+  const groups = GROUPS.map((g) => ({ ...g, rows: sessions.filter((s) => g.statuses.includes(s.status)) }));
+  const nothingActive = state && pending.length === 0 && groups.every((g) => g.rows.length === 0);
 
   return (
-    <main className="mx-auto max-w-3xl px-4 py-12 sm:px-6">
-      <header className="flex items-baseline justify-between">
-        <h1 className="text-2xl font-semibold tracking-tight">Session deck</h1>
-        {offline && <span className="text-sm text-amber-600">server unreachable</span>}
+    <main className="mx-auto max-w-6xl px-4 py-4">
+      <header className={`${BORDER} flex items-baseline justify-between bg-black px-2 py-1 text-white dark:bg-white dark:text-black`}>
+        <h1 className="text-sm font-bold uppercase tracking-widest">Session deck</h1>
+        {offline && <span className="bg-red-600 px-2 text-xs font-bold uppercase text-white">server unreachable</span>}
       </header>
 
       {pending.length > 0 && (
-        <section className="mt-10">
-          <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-amber-600">
-            Waiting on you ({pending.length})
-          </h2>
-          <div className="space-y-6">
+        <section className="mt-6">
+          <GroupHeader title="Approve?" count={pending.length} color="bg-orange-500" />
+          <div className="space-y-2">
             {pending.map((p) => (
               <PendingCard key={p.id} p={p} now={now} onDecide={(b) => void decide(p.id, b)} />
             ))}
@@ -181,30 +184,26 @@ export function App() {
         </section>
       )}
 
-      <section className="mt-12">
-        <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-stone-500">Sessions</h2>
-        {state && active.length === 0 && (
-          <p className="rounded-2xl border border-dashed border-stone-300 p-8 text-center text-stone-500 dark:border-stone-700">
-            Nothing active. Calm seas.
-          </p>
-        )}
-        <div className="space-y-6">
-          {active.map((s) => (
-            <SessionCard key={s.id} s={s} now={now} />
-          ))}
-        </div>
-      </section>
+      {groups
+        .filter((g) => g.rows.length > 0)
+        .map((g) => (
+          <section key={g.key} className="mt-6">
+            <GroupHeader title={g.title} count={g.rows.length} color={g.color} />
+            <SessionTable sessions={g.rows} now={now} />
+          </section>
+        ))}
+
+      {nothingActive && (
+        <p className={`${BORDER} mt-6 border-dashed p-3 text-center text-sm uppercase`}>Nothing active</p>
+      )}
 
       {idle.length > 0 && (
-        <details className="mt-12">
-          <summary className="cursor-pointer text-sm font-semibold uppercase tracking-wide text-stone-500">
-            Idle ({idle.length})
+        <details className="mt-6">
+          <summary className="mb-1 cursor-pointer text-xs font-bold uppercase tracking-widest">
+            <span className="mr-2 inline-block h-2.5 w-2.5 bg-stone-400 align-middle dark:bg-stone-600" />
+            Idle [{idle.length}]
           </summary>
-          <div className="mt-4 space-y-6 opacity-70">
-            {idle.map((s) => (
-              <SessionCard key={s.id} s={s} now={now} />
-            ))}
-          </div>
+          <SessionTable sessions={idle} now={now} />
         </details>
       )}
     </main>

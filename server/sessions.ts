@@ -19,7 +19,16 @@ interface TranscriptRecord {
   isSidechain?: boolean;
   aiTitle?: string;
   lastPrompt?: string;
-  message?: { stop_reason?: string | null };
+  isApiErrorMessage?: boolean;
+  message?: { stop_reason?: string | null; content?: unknown };
+}
+
+function hasToolError(r: TranscriptRecord): boolean {
+  const content = r.message?.content;
+  return (
+    Array.isArray(content) &&
+    content.some((b) => (b as { type?: string; is_error?: boolean })?.type === "tool_result" && (b as { is_error?: boolean }).is_error === true)
+  );
 }
 
 async function readTail(path: string, size: number): Promise<string> {
@@ -63,24 +72,39 @@ export function parseTranscript(id: string, text: string, mtime: Date): Session 
     if (r.type === "last-prompt" && r.lastPrompt) lastPrompt = r.lastPrompt;
     if (r.isSidechain) continue;
     if (r.type === "user" || r.type === "assistant") lastTurn = r;
-    if (r.type === "system" && r.subtype === "turn_duration") lastTurn = r;
+    if (r.type === "system" && (r.subtype === "turn_duration" || r.subtype === "api_error")) lastTurn = r;
   }
   if (!cwd || !lastTurn) return null;
 
   const lastActivity = lastTurn.timestamp ? new Date(lastTurn.timestamp) : mtime;
   const age = Date.now() - lastActivity.getTime();
+  const apiError =
+    (lastTurn.type === "system" && lastTurn.subtype === "api_error") || lastTurn.isApiErrorMessage === true;
   const turnEnded =
-    lastTurn.type === "system" ||
+    (lastTurn.type === "system" && lastTurn.subtype === "turn_duration") ||
     (lastTurn.type === "assistant" && lastTurn.message?.stop_reason === "end_turn");
 
   let status: SessionStatus;
   let statusDetail: string;
-  if (turnEnded) {
+  if (apiError && age <= STALE_DONE_MS) {
+    status = "failing";
+    statusDetail = "API error";
+  } else if (turnEnded || apiError) {
     status = age > STALE_DONE_MS ? "idle" : "done";
     statusDetail = status === "done" ? "Finished its turn, your move" : "Quiet for a while";
+  } else if (age > STALE_DONE_MS) {
+    // Long-dead mid-turn sessions are usually just closed; don't keep them red all day.
+    status = "idle";
+    statusDetail = "Stopped mid-turn";
+  } else if (age > STALE_WORKING_MS) {
+    status = "failing";
+    statusDetail = "Stuck mid-turn";
+  } else if (lastTurn.type === "user" && hasToolError(lastTurn)) {
+    status = "failing";
+    statusDetail = "Last command failed";
   } else {
-    status = age > STALE_WORKING_MS ? "idle" : "working";
-    statusDetail = status === "working" ? "Working" : "No activity mid-turn (closed or stuck?)";
+    status = "working";
+    statusDetail = "Working";
   }
 
   return {

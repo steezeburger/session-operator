@@ -1,5 +1,17 @@
 @import "tailwindcss";
 
+@theme {
+  --font-sans: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
 body {
-  @apply bg-stone-50 text-stone-900 dark:bg-stone-950 dark:text-stone-100 antialiased;
+  @apply bg-stone-100 text-black dark:bg-neutral-900 dark:text-white antialiased font-mono;
+}
+
+/* All square, always. */
+*,
+*::before,
+*::after {
+  border-radius: 0 !important;
+  box-shadow: none !important;
 }

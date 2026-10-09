@@ -1,4 +1,4 @@
-export type SessionStatus = "waiting" | "working" | "done" | "idle";
+export type SessionStatus = "waiting" | "failing" | "working" | "done" | "idle";
 
 export interface Session {
   id: string;

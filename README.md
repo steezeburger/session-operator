@@ -37,11 +37,13 @@ Claude Code ──hook stdin──▶ bin/deck-hook ──POST /api/hook──�
   last prompt (clipped to 160 chars), and the latest turn record. Nothing in a transcript
   is ever executed.
 - **Status** comes from the latest turn record, then hook events override it when they
-  are newer:
-  - waiting - a permission request is pending, or a `Notification` hook fired
-  - working - mid-turn with activity in the last 10 min
-  - done - the turn ended ("your move"), within the last hour
-  - idle - anything quieter than that (collapsed at the bottom)
+  are newer. Colors: orange = needs you, red = failing, green = working, gray = idle.
+  - waiting (orange) - a permission request is pending, or a `Notification` hook fired
+  - done (orange, "your move") - the turn ended within the last hour
+  - failing (red) - stuck mid-turn for 10+ min, the last tool result was an error, or the
+    latest record is an API error
+  - working (green) - mid-turn with recent activity
+  - idle (gray) - anything quieter, including sessions stopped mid-turn over an hour ago
 - **Approvals.** On `PermissionRequest`, `deck-hook` posts the payload, the server queues
   it and fires a macOS notification, and the hook long-polls for your click. Approve or
   Deny becomes the hook's JSON decision.
