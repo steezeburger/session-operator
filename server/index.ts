@@ -6,7 +6,9 @@ import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
-import { scanSessions } from "./sessions.ts";
+import { nextActionFor } from "./next-action.ts";
+import { liveSessions, sendReply } from "./reply.ts";
+import { fullReplies, readFeed, scanSessions } from "./sessions.ts";
 import type { Behavior, DeckState, PendingDecision, Session, SessionStatus } from "./types.ts";
 
 const PORT = Number(process.env.DECK_PORT ?? 4477);
@@ -87,7 +89,7 @@ function setHookStatus(sessionId: string, status: SessionStatus, detail: string,
   hookStatus.set(sessionId, { status, detail, at: Date.now(), cwd });
 }
 
-const STATUS_ORDER: Record<SessionStatus, number> = { failing: 0, waiting: 1, done: 1, working: 2, idle: 3 };
+const STATUS_ORDER: Record<SessionStatus, number> = { failing: 0, waiting: 1, done: 1, blocked: 2, working: 3, idle: 4 };
 
 async function buildState(): Promise<DeckState> {
   const fromTranscripts = await scanSessions();
@@ -104,6 +106,13 @@ async function buildState(): Promise<DeckState> {
         branch: null,
         title: null,
         lastPrompt: null,
+        lastReply: null,
+        nextAction: null,
+        nextUrl: null,
+        nextSay: null,
+        nextLoading: false,
+        live: false,
+        blockedOn: null,
         status: hs.status,
         statusDetail: hs.detail,
         lastActivity: new Date(hs.at).toISOString(),
@@ -111,6 +120,36 @@ async function buildState(): Promise<DeckState> {
     } else if (hs.at >= new Date(s.lastActivity).getTime()) {
       s.status = hs.status;
       s.statusDetail = hs.detail;
+    }
+  }
+
+  const live = await liveSessions();
+  for (const s of byId.values()) s.live = live.has(s.id);
+
+  // "Your move" sessions get a specific next step from Haiku; the regex guess stays as fallback.
+  for (const s of byId.values()) {
+    const text = fullReplies.get(s.id);
+    if ((s.status !== "done" && s.status !== "working") || !text) continue;
+    const ai = nextActionFor(s.id, s.cwd, text, changed);
+    // A working session only borrows "waiting on X" (e.g. polling a deploy); its asks aren't final yet.
+    if (s.status === "working") {
+      if (ai?.blockedOn) {
+        s.status = "blocked";
+        s.blockedOn = ai.blockedOn;
+      }
+      continue;
+    }
+    if (ai === undefined) s.nextLoading = s.nextAction === null;
+    else if (ai) {
+      // Claude's own "Next:" line is the step, verbatim. Haiku only fills in when there isn't one.
+      const explicit = /\bNext:/i.test(text) ? s.nextAction : null;
+      s.nextAction = explicit ?? ai.action;
+      s.nextUrl = ai.url;
+      s.nextSay = ai.say && !s.nextAction.includes(ai.say) ? ai.say : null;
+      if (ai.blockedOn) {
+        s.status = "blocked";
+        s.blockedOn = ai.blockedOn;
+      }
     }
   }
 
@@ -248,6 +287,24 @@ app.post("/api/decisions/:id", async (c) => {
 });
 
 app.get("/api/state", async (c) => c.json(await buildState()));
+
+app.post("/api/sessions/:id/reply", async (c) => {
+  const { text } = (await c.req.json()) as { text?: unknown };
+  if (typeof text !== "string" || !text.trim()) return c.json({ error: "empty reply" }, 400);
+  try {
+    const result = await sendReply(c.req.param("id"), text);
+    if (result === "not-running") return c.json({ error: "That session isn't running anymore" }, 409);
+    if (result === "not-in-iterm") return c.json({ error: "Couldn't find its iTerm tab" }, 409);
+  } catch {
+    return c.json({ error: "iTerm refused - allow Automation for iTerm in System Settings" }, 500);
+  }
+  return c.json({ ok: true });
+});
+
+app.get("/api/sessions/:id/feed", async (c) => {
+  const feed = await readFeed(c.req.param("id"));
+  return feed ? c.json(feed) : c.text("not found", 404);
+});
 
 app.get("/api/events", (c) =>
   streamSSE(c, async (stream) => {

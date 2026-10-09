@@ -1,23 +1,29 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Behavior, DeckState, PendingDecision, Session, SessionStatus } from "../../server/types.ts";
+import { MatrixRain } from "./MatrixRain.tsx";
+import { ReplyBox } from "./ReplyBox.tsx";
+import { SessionDetail } from "./SessionDetail.tsx";
 
-// Four meanings only: orange = needs Jesse, red = failing, green = running, gray = idle.
-const NEEDS_YOU = "bg-orange-500 text-black";
+// Five meanings only: amber = needs Jesse, red = failing, cyan = waiting on the world (CI, deploy),
+// bright green = running, dark green = idle.
+const NEEDS_YOU = "bg-needs text-black [text-shadow:none] pulse";
 const STATUS_STYLE: Record<SessionStatus, { label: string; block: string; next: string }> = {
   waiting: { label: "NEEDS YOU", block: NEEDS_YOU, next: "Answer it" },
   done: { label: "YOUR MOVE", block: NEEDS_YOU, next: "Read + reply" },
-  failing: { label: "FAILING", block: "bg-red-600 text-white", next: "Check on it" },
-  working: { label: "WORKING", block: "bg-green-600 text-white", next: "Let it run" },
-  idle: { label: "IDLE", block: "bg-stone-400 text-black dark:bg-stone-600 dark:text-white", next: "-" },
+  failing: { label: "FAILING", block: "bg-fail text-black [text-shadow:none]", next: "Check on it" },
+  working: { label: "WORKING", block: "bg-code text-black [text-shadow:none]", next: "Let it run" },
+  blocked: { label: "WAITING ON", block: "bg-blocked text-black [text-shadow:none]", next: "-" },
+  idle: { label: "IDLE", block: "bg-code-dark text-code-dim", next: "-" },
 };
 
 const GROUPS: { key: string; title: string; statuses: SessionStatus[]; color: string }[] = [
-  { key: "needs", title: "Needs you", statuses: ["waiting", "done"], color: "bg-orange-500" },
-  { key: "failing", title: "Failing", statuses: ["failing"], color: "bg-red-600" },
-  { key: "working", title: "Working", statuses: ["working"], color: "bg-green-600" },
+  { key: "needs", title: "Needs you", statuses: ["waiting", "done"], color: "bg-needs" },
+  { key: "failing", title: "Failing", statuses: ["failing"], color: "bg-fail" },
+  { key: "blocked", title: "Waiting on something", statuses: ["blocked"], color: "bg-blocked" },
+  { key: "working", title: "Working", statuses: ["working"], color: "bg-code" },
 ];
 
-const BORDER = "border-2 border-black dark:border-white";
+const BORDER = "border border-code-dim";
 
 function ago(iso: string, now: number) {
   const s = Math.max(0, Math.round((now - new Date(iso).getTime()) / 1000));
@@ -68,7 +74,7 @@ function GroupHeader({ title, count, color }: { title: string; count: number; co
   return (
     <h2 className="mb-1 flex items-center gap-2 text-xs font-bold uppercase tracking-widest">
       <span className={`inline-block h-2.5 w-2.5 ${color}`} />
-      {title} [{count}]
+      {">"} {title} [{count}]
     </h2>
   );
 }
@@ -78,21 +84,21 @@ function PendingCard({ p, now, onDecide }: { p: PendingDecision; now: number; on
   const input = JSON.stringify(p.toolInput, null, 2);
   const project = p.cwd.split("/").filter(Boolean).pop() ?? p.cwd;
   return (
-    <article className={`${BORDER} flex bg-white dark:bg-black`}>
-      <div className="w-2 shrink-0 bg-orange-500" />
+    <article className="glow-needs flex border border-needs bg-black/85">
+      <div className="w-2 shrink-0 bg-needs pulse" />
       <div className="min-w-0 flex-1 p-2">
-        <div className="flex items-baseline justify-between gap-4 text-xs uppercase">
+        <div className="flex items-baseline justify-between gap-4 text-xs uppercase text-needs [text-shadow:0_0_4px_rgb(255_176_0/0.6)]">
           <span className="font-bold">
             {project} → {p.toolName}
           </span>
           <span>terminal fallback {left}s</span>
         </div>
-        <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all bg-black px-2 py-1 text-xs text-white dark:bg-white dark:text-black">
+        <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all border border-code-dark bg-code-dark/40 px-2 py-1 text-xs">
           {p.summary}
         </pre>
         {input && input !== JSON.stringify(p.summary) && (
           <details className="mt-1 text-xs">
-            <summary className="cursor-pointer uppercase">Full tool input</summary>
+            <summary className="cursor-pointer uppercase text-code-dim">Full tool input</summary>
             <pre className={`${BORDER} mt-1 max-h-64 overflow-auto p-2`}>{input}</pre>
           </details>
         )}
@@ -100,48 +106,137 @@ function PendingCard({ p, now, onDecide }: { p: PendingDecision; now: number; on
           <button
             type="button"
             onClick={() => onDecide("allow")}
-            className={`${BORDER} bg-green-600 px-5 py-1 text-sm font-bold uppercase text-white hover:bg-green-700`}
+            className="border border-code bg-code px-5 py-1 text-sm font-bold uppercase text-black [text-shadow:none] hover:bg-black hover:text-code hover:[text-shadow:0_0_4px_rgb(0_255_65/0.6)]"
           >
             Approve
           </button>
           <button
             type="button"
             onClick={() => onDecide("deny")}
-            className={`${BORDER} bg-red-600 px-5 py-1 text-sm font-bold uppercase text-white hover:bg-red-700`}
+            className="border border-fail bg-fail px-5 py-1 text-sm font-bold uppercase text-black [text-shadow:none] hover:bg-black hover:text-fail"
           >
             Deny
           </button>
-          <span className="ml-2 truncate text-xs opacity-60">{p.cwd}</span>
+          <span className="ml-2 truncate text-xs text-code-dim">{p.cwd}</span>
         </div>
       </div>
     </article>
   );
 }
 
-function SessionRow({ s, now }: { s: Session; now: number }) {
+function SessionRow({ s, now, onOpen }: { s: Session; now: number; onOpen: () => void }) {
   const style = STATUS_STYLE[s.status];
-  const next = s.status === "waiting" || s.status === "failing" ? s.statusDetail : style.next;
+  const next =
+    s.status === "blocked" ? (s.blockedOn ?? "-") : s.status === "waiting" || s.status === "failing" ? s.statusDetail : style.next;
   return (
-    <div className="grid grid-cols-[5.5rem_1fr_2.5rem] items-stretch text-xs leading-tight md:grid-cols-[5.5rem_16rem_1fr_10rem_2.5rem]">
+    <button
+      type="button"
+      onClick={onOpen}
+      className="grid w-full cursor-pointer grid-cols-[5.5rem_1fr_2.5rem] items-stretch text-left text-xs leading-tight hover:bg-code-dark/50 md:grid-cols-[5.5rem_16rem_1fr_14rem_2.5rem]"
+    >
       <div className={`px-1.5 py-0.5 font-bold ${style.block}`}>{style.label}</div>
       <div className="min-w-0 truncate px-1.5 py-0.5" title={s.cwd}>
         <span className="font-bold">{s.project}</span>
-        {s.branch && <span className="opacity-60"> {s.branch}</span>}
+        {s.branch && <span className="text-code-dim"> {s.branch}</span>}
       </div>
       <div className="hidden min-w-0 truncate px-1.5 py-0.5 md:block" title={s.lastPrompt ?? undefined}>
         {s.title ?? "-"}
       </div>
-      <div className="hidden truncate px-1.5 py-0.5 font-bold uppercase md:block">{next}</div>
-      <div className="px-1.5 py-0.5 text-right">{ago(s.lastActivity, now)}</div>
-    </div>
+      <div
+        className={`hidden truncate px-1.5 py-0.5 font-bold uppercase md:block ${s.status === "blocked" ? "text-blocked [text-shadow:0_0_4px_rgb(0_229_255/0.6)]" : ""}`}
+        title={next}
+      >
+        {next}
+      </div>
+      <div className="px-1.5 py-0.5 text-right text-code-dim">{ago(s.lastActivity, now)}</div>
+    </button>
   );
 }
 
-function SessionTable({ sessions, now }: { sessions: Session[]; now: number }) {
+// One imperative line per "needs you" session: what Jesse does next, not what Claude did.
+function nextStep(s: Session, pending: PendingDecision | undefined): string {
+  if (pending) return `Approve or deny ${pending.toolName} above: ${pending.summary}`;
+  if (s.status === "waiting") return `In its terminal: ${s.statusDetail}`;
+  if (s.nextAction) return s.nextAction;
+  return s.nextLoading ? "" : "No clear ask - open it to see the last message";
+}
+
+// `code` spans from Claude's text, shown as bright chips so commands stand out.
+function WithCode({ text }: { text: string }) {
   return (
-    <div className={`${BORDER} divide-y divide-black bg-white dark:divide-white dark:bg-black`}>
+    <>
+      {text.split(/(`[^`]+`)/).map((part, i) =>
+        part.startsWith("`") && part.endsWith("`") && part.length > 2 ? (
+          <code key={i} className="bg-code-dark px-1 normal-case text-white [text-shadow:0_0_4px_rgb(214_255_223/0.6)]">
+            {part.slice(1, -1)}
+          </code>
+        ) : (
+          <span key={i}>{part}</span>
+        ),
+      )}
+    </>
+  );
+}
+
+function NeedsYouCard({
+  s,
+  now,
+  pending,
+  onOpen,
+}: { s: Session; now: number; pending: PendingDecision | undefined; onOpen: () => void }) {
+  const action = nextStep(s, pending);
+  return (
+    <article
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(e) => e.key === "Enter" && onOpen()}
+      className="glow-needs flex cursor-pointer border border-needs bg-black/85 hover:bg-code-dark/30"
+    >
+      <div className="pulse w-2 shrink-0 bg-needs" />
+      <div className="min-w-0 flex-1 p-2">
+        <div className="flex items-baseline justify-between gap-4 text-xs">
+          <span className="min-w-0 truncate" title={s.cwd}>
+            <span className="font-bold">{s.project}</span>
+            {s.branch && <span className="text-code-dim"> {s.branch}</span>}
+            {s.title && <span className="text-code-dim"> · {s.title}</span>}
+          </span>
+          <span className="shrink-0 text-code-dim">{ago(s.lastActivity, now)} ago</span>
+        </div>
+        <p className="mt-1 text-lg font-bold text-needs [text-shadow:0_0_6px_rgb(255_176_0/0.7)]">
+          {"→ "}
+          {action ? <WithCode text={action} /> : <span className="cursor text-code-dim">decoding next step</span>}
+        </p>
+        {s.nextUrl && (
+          <div className="mt-1 flex flex-wrap items-center gap-2 text-sm">
+            {s.nextUrl && (
+              <a
+                href={s.nextUrl}
+                target="_blank"
+                rel="noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                className="border border-needs px-2 font-bold text-needs hover:bg-needs hover:text-black hover:[text-shadow:none]"
+              >
+                open {s.nextUrl.replace(/^https?:\/\//, "")} ↗
+              </a>
+            )}
+          </div>
+        )}
+        {s.lastReply && (
+          <p className="mt-1 truncate text-xs text-code-dim" title={s.lastReply}>
+            claude: {s.lastReply}
+          </p>
+        )}
+        {s.live && !pending && <ReplyBox sessionId={s.id} say={s.nextSay} />}
+      </div>
+    </article>
+  );
+}
+
+function SessionTable({ sessions, now, onOpen }: { sessions: Session[]; now: number; onOpen: (id: string) => void }) {
+  return (
+    <div className={`${BORDER} glow divide-y divide-code-dark bg-black/85`}>
       {sessions.map((s) => (
-        <SessionRow key={s.id} s={s} now={now} />
+        <SessionRow key={s.id} s={s} now={now} onOpen={() => onOpen(s.id)} />
       ))}
     </div>
   );
@@ -150,6 +245,8 @@ function SessionTable({ sessions, now }: { sessions: Session[]; now: number }) {
 export function App() {
   const { state, offline, refresh } = useDeckState();
   const now = useNow();
+  const [openId, setOpenId] = useState<string | null>(null);
+  const close = useCallback(() => setOpenId(null), []);
 
   const decide = async (id: string, behavior: Behavior) => {
     await fetch(`/api/decisions/${id}`, {
@@ -163,19 +260,26 @@ export function App() {
   const sessions = state?.sessions ?? [];
   const idle = sessions.filter((s) => s.status === "idle");
   const pending = state?.pending ?? [];
+  const openSession = sessions.find((s) => s.id === openId);
+  const pendingBySession = new Map(pending.map((p) => [p.sessionId, p]));
   const groups = GROUPS.map((g) => ({ ...g, rows: sessions.filter((s) => g.statuses.includes(s.status)) }));
   const nothingActive = state && pending.length === 0 && groups.every((g) => g.rows.length === 0);
 
   return (
     <main className="mx-auto max-w-6xl px-4 py-4">
-      <header className={`${BORDER} flex items-baseline justify-between bg-black px-2 py-1 text-white dark:bg-white dark:text-black`}>
-        <h1 className="text-sm font-bold uppercase tracking-widest">Session deck</h1>
-        {offline && <span className="bg-red-600 px-2 text-xs font-bold uppercase text-white">server unreachable</span>}
+      <MatrixRain />
+      <header className={`${BORDER} glow flex items-baseline justify-between bg-black/85 px-2 py-1`}>
+        <h1 className="cursor text-sm font-bold uppercase tracking-widest">Session deck</h1>
+        {offline ? (
+          <span className="pulse bg-fail px-2 text-xs font-bold uppercase text-black [text-shadow:none]">connection lost</span>
+        ) : (
+          <span className="text-xs text-code-dim">{sessions.length} signals in the matrix</span>
+        )}
       </header>
 
       {pending.length > 0 && (
         <section className="mt-6">
-          <GroupHeader title="Approve?" count={pending.length} color="bg-orange-500" />
+          <GroupHeader title="Approve?" count={pending.length} color="bg-needs" />
           <div className="space-y-2">
             {pending.map((p) => (
               <PendingCard key={p.id} p={p} now={now} onDecide={(b) => void decide(p.id, b)} />
@@ -189,23 +293,39 @@ export function App() {
         .map((g) => (
           <section key={g.key} className="mt-6">
             <GroupHeader title={g.title} count={g.rows.length} color={g.color} />
-            <SessionTable sessions={g.rows} now={now} />
+            {g.key === "needs" ? (
+              <div className="space-y-2">
+                {g.rows.map((s) => (
+                  <NeedsYouCard
+                    key={s.id}
+                    s={s}
+                    now={now}
+                    pending={pendingBySession.get(s.id)}
+                    onOpen={() => setOpenId(s.id)}
+                  />
+                ))}
+              </div>
+            ) : (
+              <SessionTable sessions={g.rows} now={now} onOpen={setOpenId} />
+            )}
           </section>
         ))}
 
       {nothingActive && (
-        <p className={`${BORDER} mt-6 border-dashed p-3 text-center text-sm uppercase`}>Nothing active</p>
+        <p className={`${BORDER} mt-6 border-dashed bg-black/85 p-3 text-center text-sm`}>wake up, jesse... nothing is running</p>
       )}
 
       {idle.length > 0 && (
         <details className="mt-6">
-          <summary className="mb-1 cursor-pointer text-xs font-bold uppercase tracking-widest">
-            <span className="mr-2 inline-block h-2.5 w-2.5 bg-stone-400 align-middle dark:bg-stone-600" />
+          <summary className="mb-1 cursor-pointer text-xs font-bold uppercase tracking-widest text-code-dim">
+            <span className="mr-2 inline-block h-2.5 w-2.5 bg-code-dark align-middle" />
             Idle [{idle.length}]
           </summary>
-          <SessionTable sessions={idle} now={now} />
+          <SessionTable sessions={idle} now={now} onOpen={setOpenId} />
         </details>
       )}
+
+      {openSession && <SessionDetail session={openSession} onClose={close} />}
     </main>
   );
 }

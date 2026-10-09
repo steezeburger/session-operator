@@ -1,7 +1,7 @@
 import { open, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
-import type { Session, SessionStatus } from "./types.ts";
+import type { FeedItem, Session, SessionStatus } from "./types.ts";
 
 const PROJECTS_DIR = join(homedir(), ".claude", "projects");
 const LOOKBACK_MS = 24 * 60 * 60 * 1000;
@@ -51,12 +51,48 @@ function clip(text: string | undefined, max = 160): string | null {
   return oneLine.length > max ? `${oneLine.slice(0, max - 1)}…` : oneLine;
 }
 
+// Keep the end: a question or ask for Jesse usually comes last.
+function clipTail(text: string | undefined, max = 280): string | null {
+  if (!text) return null;
+  const oneLine = text.replace(/\s+/g, " ").trim();
+  return oneLine.length > max ? `…${oneLine.slice(-(max - 1))}` : oneLine;
+}
+
+function assistantText(r: TranscriptRecord): string | undefined {
+  const content = r.message?.content;
+  if (!Array.isArray(content)) return undefined;
+  const text = content
+    .filter((b) => (b as { type?: string })?.type === "text")
+    .map((b) => (b as { text?: string }).text ?? "")
+    .join("\n")
+    .trim();
+  return text || undefined;
+}
+
+// Claude's replies end with "Next: <one action>"; that line is the step. Failing that,
+// the last question it asked is what Jesse has to answer.
+export function extractNextAction(text: string | undefined): string | null {
+  if (!text) return null;
+  const next = [...text.matchAll(/(?:^|\n|\. )\**Next:?\**:?\s*([^\n]+(?:\n(?!\n)[^\n]+)*)/gi)].pop()?.[1];
+  if (next) return clip(next, 240);
+  const question = text
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((p) => p.trim())
+    .filter((p) => p.endsWith("?"))
+    .pop();
+  return question ? clip(`Answer: ${question}`, 240) : null;
+}
+
+/** Full text of each session's last Claude message, for next-action inference. Not sent to the UI. */
+export const fullReplies = new Map<string, string>();
+
 export function parseTranscript(id: string, text: string, mtime: Date): Session | null {
   let cwd: string | undefined;
   let branch: string | undefined;
   let title: string | undefined;
   let lastPrompt: string | undefined;
   let lastTurn: TranscriptRecord | undefined;
+  let lastReply: string | undefined;
 
   for (const line of text.split("\n")) {
     if (!line) continue;
@@ -72,9 +108,11 @@ export function parseTranscript(id: string, text: string, mtime: Date): Session 
     if (r.type === "last-prompt" && r.lastPrompt) lastPrompt = r.lastPrompt;
     if (r.isSidechain) continue;
     if (r.type === "user" || r.type === "assistant") lastTurn = r;
+    if (r.type === "assistant") lastReply = assistantText(r) ?? lastReply;
     if (r.type === "system" && (r.subtype === "turn_duration" || r.subtype === "api_error")) lastTurn = r;
   }
   if (!cwd || !lastTurn) return null;
+  if (lastReply) fullReplies.set(id, lastReply);
 
   const lastActivity = lastTurn.timestamp ? new Date(lastTurn.timestamp) : mtime;
   const age = Date.now() - lastActivity.getTime();
@@ -114,6 +152,13 @@ export function parseTranscript(id: string, text: string, mtime: Date): Session 
     branch: branch && branch !== "HEAD" ? branch : null,
     title: clip(title, 80),
     lastPrompt: clip(lastPrompt),
+    lastReply: clipTail(lastReply),
+    nextAction: extractNextAction(lastReply),
+    nextUrl: null,
+    nextSay: null,
+    nextLoading: false,
+    live: false,
+    blockedOn: null,
     status,
     statusDetail,
     lastActivity: lastActivity.toISOString(),
@@ -155,4 +200,74 @@ export async function scanSessions(): Promise<Session[]> {
     }
   }
   return sessions;
+}
+
+const FEED_LIMIT = 40;
+const FEED_TEXT_MAX = 2000;
+const SESSION_ID_RE = /^[0-9a-f-]{36}$/;
+
+function toolLine(block: { name?: string; input?: Record<string, unknown> }): string {
+  const i = block.input ?? {};
+  const pick = [i.description, i.command, i.file_path, i.pattern, i.url, i.prompt].find((v) => typeof v === "string");
+  return `${block.name ?? "tool"}${pick ? `: ${pick}` : ""}`;
+}
+
+function clipFeed(text: string): string {
+  return text.length > FEED_TEXT_MAX ? `${text.slice(0, FEED_TEXT_MAX - 1)}…` : text;
+}
+
+// Recent conversation for the detail panel. Same rule as the scan: read fields, never act on them.
+export async function readFeed(id: string): Promise<FeedItem[] | null> {
+  if (!SESSION_ID_RE.test(id)) return null;
+  let dirs: string[];
+  try {
+    dirs = await readdir(PROJECTS_DIR);
+  } catch {
+    return null;
+  }
+  for (const dir of dirs) {
+    const path = join(PROJECTS_DIR, dir, `${id}.jsonl`);
+    let size: number;
+    try {
+      size = (await stat(path)).size;
+    } catch {
+      continue;
+    }
+    const feed: FeedItem[] = [];
+    for (const line of (await readTail(path, size)).split("\n")) {
+      if (!line) continue;
+      let r: TranscriptRecord;
+      try {
+        r = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (r.isSidechain || (r.type !== "user" && r.type !== "assistant")) continue;
+      const at = r.timestamp ?? null;
+      const content = r.message?.content;
+      if (r.isApiErrorMessage) {
+        feed.push({ kind: "error", text: clipFeed(assistantText(r) ?? "API error"), at });
+        continue;
+      }
+      if (typeof content === "string") {
+        // Harness-injected user records (reminders, command echoes) start with a tag.
+        if (r.type === "user" && !content.trimStart().startsWith("<")) feed.push({ kind: "user", text: clipFeed(content), at });
+        continue;
+      }
+      if (!Array.isArray(content)) continue;
+      for (const b of content as { type?: string; text?: string; is_error?: boolean; content?: unknown }[]) {
+        if (b?.type === "text" && b.text?.trim()) {
+          if (r.type === "user" && b.text.trimStart().startsWith("<")) continue;
+          feed.push({ kind: r.type === "user" ? "user" : "assistant", text: clipFeed(b.text.trim()), at });
+        } else if (b?.type === "tool_use") {
+          feed.push({ kind: "tool", text: clipFeed(toolLine(b as { name?: string; input?: Record<string, unknown> })), at });
+        } else if (b?.type === "tool_result" && b.is_error) {
+          const text = typeof b.content === "string" ? b.content : JSON.stringify(b.content);
+          feed.push({ kind: "error", text: clipFeed(text), at });
+        }
+      }
+    }
+    return feed.slice(-FEED_LIMIT);
+  }
+  return null;
 }
