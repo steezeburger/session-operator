@@ -8,7 +8,10 @@ const run = promisify(execFile);
 const REGISTRY_DIR = join(homedir(), ".claude", "sessions");
 const MAX_REPLY = 4000;
 
-// Finds the iTerm session on that tty and types the text into it, Enter included.
+// Finds the iTerm session on that tty and types the text into it, then presses Enter.
+// write text's own newline is a line feed, which Claude Code reads as Ctrl+J (insert
+// newline), so Enter goes separately as a carriage return, after a pause so it isn't
+// swallowed as part of the pasted text.
 // Values arrive as argv, never spliced into the script source.
 const TYPE_INTO_ITERM = `
 on run argv
@@ -19,7 +22,9 @@ on run argv
       repeat with t in tabs of w
         repeat with s in sessions of t
           if tty of s is ttyName then
-            tell s to write text msg
+            tell s to write text msg newline no
+            delay 0.15
+            tell s to write text (ASCII character 13) newline no
             return "ok"
           end if
         end repeat
