@@ -1,0 +1,60 @@
+#!/usr/bin/env node
+// Claude Code hook -> session deck bridge.
+// Every failure path exits 0 with no output, which tells Claude Code to carry on
+// exactly as if this hook didn't exist (for permissions: show its normal prompt).
+// It never approves anything on its own; only an explicit click in the deck does.
+
+const BASE = process.env.DECK_URL ?? "http://127.0.0.1:4477";
+const TIMEOUT_MS = Number(process.env.DECK_TIMEOUT_MS ?? 120000);
+
+async function readStdin() {
+  const chunks = [];
+  for await (const chunk of process.stdin) chunks.push(chunk);
+  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+}
+
+async function post(path, body, ms) {
+  const res = await fetch(BASE + path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(ms),
+  });
+  if (!res.ok) throw new Error(`status ${res.status}`);
+  return res.json();
+}
+
+async function waitForDecision(id) {
+  const deadline = Date.now() + TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const res = await fetch(`${BASE}/api/decisions/${id}/wait`, {
+      signal: AbortSignal.timeout(30000),
+    });
+    const body = await res.json();
+    if (body.status === "decided") return body;
+    if (body.status !== "pending") return null;
+  }
+  return null;
+}
+
+async function main() {
+  const payload = await readStdin();
+  if (payload.hook_event_name !== "PermissionRequest") {
+    await post("/api/hook", payload, 1500);
+    return;
+  }
+  const { id } = await post("/api/hook", { ...payload, deck_timeout_ms: TIMEOUT_MS }, 2000);
+  const decision = id ? await waitForDecision(id) : null;
+  if (!decision || (decision.behavior !== "allow" && decision.behavior !== "deny")) return;
+  const out = { behavior: decision.behavior };
+  if (decision.behavior === "deny") out.message = decision.message || "Denied from session deck";
+  process.stdout.write(
+    JSON.stringify({
+      hookSpecificOutput: { hookEventName: "PermissionRequest", decision: out },
+    }),
+  );
+}
+
+main()
+  .catch(() => {})
+  .finally(() => process.exit(0));
