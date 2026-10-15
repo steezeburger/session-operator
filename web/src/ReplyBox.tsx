@@ -35,7 +35,7 @@ export function ReplyBox({ sessionId, say, autoFocus }: { sessionId: string; say
     // Clicks in here shouldn't open the session panel.
     <div className="mt-1.5" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
       <form
-        className="flex items-stretch gap-2"
+        className="flex flex-wrap items-stretch gap-2"
         onSubmit={(e) => {
           e.preventDefault();
           void send(text);
@@ -46,7 +46,8 @@ export function ReplyBox({ sessionId, say, autoFocus }: { sessionId: string; say
             type="button"
             onClick={() => void send(say)}
             disabled={sending}
-            className="shrink-0 border border-needs px-2 text-sm font-bold text-needs hover:bg-needs hover:text-black hover:[text-shadow:none]"
+            title={say}
+            className="max-w-full basis-full truncate border border-needs px-2 text-left text-sm font-bold text-needs hover:bg-needs hover:text-black hover:[text-shadow:none]"
           >
             say "{say}"
           </button>

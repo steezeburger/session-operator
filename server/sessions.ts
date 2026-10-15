@@ -1,6 +1,7 @@
 import { open, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import { countMentions } from "./refs.ts";
 import type { FeedItem, Session, SessionStatus } from "./types.ts";
 
 const PROJECTS_DIR = join(homedir(), ".claude", "projects");
@@ -86,6 +87,9 @@ export function extractNextAction(text: string | undefined): string | null {
 /** Full text of each session's last Claude message, for next-action inference. Not sent to the UI. */
 export const fullReplies = new Map<string, string>();
 
+/** Card/PR mention counts across each session's recent Claude messages. */
+export const mentionCounts = new Map<string, Map<string, number>>();
+
 export function parseTranscript(id: string, text: string, mtime: Date): Session | null {
   let cwd: string | undefined;
   let branch: string | undefined;
@@ -93,6 +97,7 @@ export function parseTranscript(id: string, text: string, mtime: Date): Session 
   let lastPrompt: string | undefined;
   let lastTurn: TranscriptRecord | undefined;
   let lastReply: string | undefined;
+  const counts = new Map<string, number>();
 
   for (const line of text.split("\n")) {
     if (!line) continue;
@@ -108,11 +113,16 @@ export function parseTranscript(id: string, text: string, mtime: Date): Session 
     if (r.type === "last-prompt" && r.lastPrompt) lastPrompt = r.lastPrompt;
     if (r.isSidechain) continue;
     if (r.type === "user" || r.type === "assistant") lastTurn = r;
-    if (r.type === "assistant") lastReply = assistantText(r) ?? lastReply;
+    if (r.type === "assistant") {
+      const said = assistantText(r);
+      if (said) countMentions(said, counts);
+      lastReply = said ?? lastReply;
+    }
     if (r.type === "system" && (r.subtype === "turn_duration" || r.subtype === "api_error")) lastTurn = r;
   }
   if (!cwd || !lastTurn) return null;
   if (lastReply) fullReplies.set(id, lastReply);
+  mentionCounts.set(id, counts);
 
   const lastActivity = lastTurn.timestamp ? new Date(lastTurn.timestamp) : mtime;
   const age = Date.now() - lastActivity.getTime();
@@ -159,6 +169,7 @@ export function parseTranscript(id: string, text: string, mtime: Date): Session 
     nextLoading: false,
     live: false,
     blockedOn: null,
+    refs: [],
     status,
     statusDetail,
     lastActivity: lastActivity.toISOString(),

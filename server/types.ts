@@ -1,4 +1,4 @@
-export type SessionStatus = "waiting" | "failing" | "working" | "done" | "blocked" | "idle";
+export type SessionStatus = "waiting" | "failing" | "working" | "done" | "blocked" | "idle" | "closed";
 
 export interface Session {
   id: string;
@@ -21,9 +21,24 @@ export interface Session {
   live: boolean;
   /** What the session is waiting on outside Jesse (CI, a deploy, a review), when status is "blocked". */
   blockedOn: string | null;
+  /** Shortcut cards and PRs this session is about, with their titles. */
+  refs: Ref[];
   status: SessionStatus;
   statusDetail: string;
   lastActivity: string;
+}
+
+export interface Ref {
+  kind: "card" | "pr";
+  id: number;
+  title: string;
+  url: string;
+  /** card: its Shortcut workflow state, lowercased (build, test, released). pr: open | draft | merged | closed. */
+  state: string;
+  /** "own": the session's branch card/PR. "mention": named in its messages. */
+  source: "own" | "mention";
+  /** How many times Claude named it in the session (recent transcript). */
+  mentions: number;
 }
 
 export interface PendingDecision {

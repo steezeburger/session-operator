@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
-import type { Behavior, DeckState, PendingDecision, Session, SessionStatus } from "../../server/types.ts";
+import type { Behavior, DeckState, PendingDecision, Ref, Session, SessionStatus } from "../../server/types.ts";
 import { MatrixRain } from "./MatrixRain.tsx";
+import { focusRefs, MetaTag, RefList, refLabel, WithMentions } from "./Refs.tsx";
 import { ReplyBox } from "./ReplyBox.tsx";
 import { SessionDetail } from "./SessionDetail.tsx";
 
-// Five meanings only: amber = needs Jesse, red = failing, cyan = waiting on the world (CI, deploy),
-// bright green = running, dark green = idle.
+// Six meanings only: amber = needs Jesse, red = failing, cyan = waiting on the world (CI, deploy),
+// bright green = running, dark green = idle, outline = closed.
 const NEEDS_YOU = "bg-needs text-black [text-shadow:none] pulse";
 const STATUS_STYLE: Record<SessionStatus, { label: string; block: string; next: string }> = {
   waiting: { label: "NEEDS YOU", block: NEEDS_YOU, next: "Answer it" },
@@ -14,6 +15,7 @@ const STATUS_STYLE: Record<SessionStatus, { label: string; block: string; next: 
   working: { label: "WORKING", block: "bg-code text-black [text-shadow:none]", next: "Let it run" },
   blocked: { label: "WAITING ON", block: "bg-blocked text-black [text-shadow:none]", next: "-" },
   idle: { label: "IDLE", block: "bg-code-dark text-code-dim", next: "-" },
+  closed: { label: "CLOSED", block: "border border-code-dim text-code-dim", next: "-" },
 };
 
 const GROUPS: { key: string; title: string; statuses: SessionStatus[]; color: string }[] = [
@@ -124,23 +126,38 @@ function PendingCard({ p, now, onDecide }: { p: PendingDecision; now: number; on
   );
 }
 
+// Worktrees live in <repo>/.worktrees/<name>; name the repo, the card says which worktree.
+function repoName(s: Session) {
+  return s.cwd.match(/\/([^/]+)\/\.worktrees\//)?.[1] ?? s.project;
+}
+
 function SessionRow({ s, now, onOpen }: { s: Session; now: number; onOpen: () => void }) {
   const style = STATUS_STYLE[s.status];
+  const { own: refs, meta } = focusRefs(s);
   const next =
     s.status === "blocked" ? (s.blockedOn ?? "-") : s.status === "waiting" || s.status === "failing" ? s.statusDetail : style.next;
   return (
     <button
       type="button"
       onClick={onOpen}
-      className="grid w-full cursor-pointer grid-cols-[5.5rem_1fr_2.5rem] items-stretch text-left text-xs leading-tight hover:bg-code-dark/50 md:grid-cols-[5.5rem_16rem_1fr_14rem_2.5rem]"
+      className="grid w-full cursor-pointer grid-cols-[5.5rem_1fr_2.5rem] items-stretch text-left text-xs leading-tight hover:bg-code-dark/50 md:grid-cols-[5.5rem_15rem_1fr_14rem_2.5rem]"
     >
       <div className={`px-1.5 py-0.5 font-bold ${style.block}`}>{style.label}</div>
-      <div className="min-w-0 truncate px-1.5 py-0.5" title={s.cwd}>
-        <span className="font-bold">{s.project}</span>
-        {s.branch && <span className="text-code-dim"> {s.branch}</span>}
+      <div className="min-w-0 truncate px-1.5 py-0.5" title={`${s.cwd}${s.branch ? ` (${s.branch})` : ""}`}>
+        <span className="font-bold">{repoName(s)}</span>
+        {refs.length > 0 ? (
+          <span className="text-white"> {refs.map(refLabel).join(" · ")}</span>
+        ) : meta ? (
+          <>
+            {" "}
+            <MetaTag />
+          </>
+        ) : (
+          s.branch && <span className="text-code-dim"> {s.branch}</span>
+        )}
       </div>
-      <div className="hidden min-w-0 truncate px-1.5 py-0.5 md:block" title={s.lastPrompt ?? undefined}>
-        {s.title ?? "-"}
+      <div className="hidden min-w-0 truncate px-1.5 py-0.5 md:block" title={refs[0]?.title ?? s.lastPrompt ?? undefined}>
+        {refs[0]?.title ?? s.title ?? "-"}
       </div>
       <div
         className={`hidden truncate px-1.5 py-0.5 font-bold uppercase md:block ${s.status === "blocked" ? "text-blocked [text-shadow:0_0_4px_rgb(0_229_255/0.6)]" : ""}`}
@@ -162,7 +179,7 @@ function nextStep(s: Session, pending: PendingDecision | undefined): string {
 }
 
 // `code` spans from Claude's text, shown as bright chips so commands stand out.
-function WithCode({ text }: { text: string }) {
+function WithCode({ text, refs = [] }: { text: string; refs?: Ref[] }) {
   return (
     <>
       {text.split(/(`[^`]+`)/).map((part, i) =>
@@ -171,7 +188,7 @@ function WithCode({ text }: { text: string }) {
             {part.slice(1, -1)}
           </code>
         ) : (
-          <span key={i}>{part}</span>
+          <WithMentions key={i} text={part} refs={refs} />
         ),
       )}
     </>
@@ -185,6 +202,7 @@ function NeedsYouCard({
   onOpen,
 }: { s: Session; now: number; pending: PendingDecision | undefined; onOpen: () => void }) {
   const action = nextStep(s, pending);
+  const focus = focusRefs(s);
   return (
     <article
       tabIndex={0}
@@ -196,15 +214,22 @@ function NeedsYouCard({
       <div className="min-w-0 flex-1 p-2">
         <div className="flex items-baseline justify-between gap-4 text-xs">
           <span className="min-w-0 truncate" title={s.cwd}>
-            <span className="font-bold">{s.project}</span>
+            <span className="font-bold">{repoName(s)}</span>
             {s.branch && <span className="text-code-dim"> {s.branch}</span>}
+            {focus.meta && (
+              <>
+                {" "}
+                <MetaTag />
+              </>
+            )}
             {s.title && <span className="text-code-dim"> · {s.title}</span>}
           </span>
           <span className="shrink-0 text-code-dim">{ago(s.lastActivity, now)} ago</span>
         </div>
+        <RefList refs={focus.own} className="mt-1" />
         <p className="mt-1 text-lg font-bold text-needs [text-shadow:0_0_6px_rgb(255_176_0/0.7)]">
           {"→ "}
-          {action ? <WithCode text={action} /> : <span className="cursor text-code-dim">decoding next step</span>}
+          {action ? <WithCode text={action} refs={s.refs} /> : <span className="cursor text-code-dim">decoding next step</span>}
         </p>
         {s.nextUrl && (
           <div className="mt-1 flex flex-wrap items-center gap-2 text-sm">
@@ -259,6 +284,7 @@ export function App() {
 
   const sessions = state?.sessions ?? [];
   const idle = sessions.filter((s) => s.status === "idle");
+  const closed = sessions.filter((s) => s.status === "closed");
   const pending = state?.pending ?? [];
   const openSession = sessions.find((s) => s.id === openId);
   const pendingBySession = new Map(pending.map((p) => [p.sessionId, p]));
@@ -322,6 +348,16 @@ export function App() {
             Idle [{idle.length}]
           </summary>
           <SessionTable sessions={idle} now={now} onOpen={setOpenId} />
+        </details>
+      )}
+
+      {closed.length > 0 && (
+        <details className="mt-4">
+          <summary className="mb-1 cursor-pointer text-xs font-bold uppercase tracking-widest text-code-dim">
+            <span className="mr-2 inline-block h-2.5 w-2.5 border border-code-dim align-middle" />
+            Closed, last 24h [{closed.length}]
+          </summary>
+          <SessionTable sessions={closed} now={now} onOpen={setOpenId} />
         </details>
       )}
 

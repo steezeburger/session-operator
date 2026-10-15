@@ -7,8 +7,9 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { nextActionFor } from "./next-action.ts";
-import { liveSessions, sendReply } from "./reply.ts";
-import { fullReplies, readFeed, scanSessions } from "./sessions.ts";
+import { refsFor } from "./refs.ts";
+import { closeSession, liveSessions, sendReply } from "./reply.ts";
+import { fullReplies, mentionCounts, readFeed, scanSessions } from "./sessions.ts";
 import type { Behavior, DeckState, PendingDecision, Session, SessionStatus } from "./types.ts";
 
 const PORT = Number(process.env.DECK_PORT ?? 4477);
@@ -89,7 +90,9 @@ function setHookStatus(sessionId: string, status: SessionStatus, detail: string,
   hookStatus.set(sessionId, { status, detail, at: Date.now(), cwd });
 }
 
-const STATUS_ORDER: Record<SessionStatus, number> = { failing: 0, waiting: 1, done: 1, blocked: 2, working: 3, idle: 4 };
+const STATUS_ORDER: Record<SessionStatus, number> = { failing: 0, waiting: 1, done: 1, blocked: 2, working: 3, idle: 4, closed: 5 };
+// Closed sessions stay listed this long after their last activity, then drop off.
+const CLOSED_SHOWN_MS = 24 * 60 * 60 * 1000;
 
 async function buildState(): Promise<DeckState> {
   const fromTranscripts = await scanSessions();
@@ -113,6 +116,7 @@ async function buildState(): Promise<DeckState> {
         nextLoading: false,
         live: false,
         blockedOn: null,
+        refs: [],
         status: hs.status,
         statusDetail: hs.detail,
         lastActivity: new Date(hs.at).toISOString(),
@@ -124,7 +128,17 @@ async function buildState(): Promise<DeckState> {
   }
 
   const live = await liveSessions();
-  for (const s of byId.values()) s.live = live.has(s.id);
+  for (const [id, s] of byId) {
+    s.live = live.has(id);
+    if (s.live) continue;
+    // No Claude process behind it: whatever the transcript last said, nobody can act on it now.
+    if (Date.now() - new Date(s.lastActivity).getTime() > CLOSED_SHOWN_MS) {
+      byId.delete(id);
+      continue;
+    }
+    s.status = "closed";
+    s.statusDetail = "Closed";
+  }
 
   // "Your move" sessions get a specific next step from Haiku; the regex guess stays as fallback.
   for (const s of byId.values()) {
@@ -152,6 +166,14 @@ async function buildState(): Promise<DeckState> {
       }
     }
   }
+
+  await Promise.all(
+    [...byId.values()]
+      .filter((s) => s.status !== "idle")
+      .map(async (s) => {
+        s.refs = await refsFor(s.cwd, s.branch, mentionCounts.get(s.id) ?? new Map(), changed);
+      }),
+  );
 
   const pendingList = [...pending.values()]
     .filter((p) => !p.decision)
@@ -236,7 +258,7 @@ app.post("/api/hook", async (c) => {
       break;
     case "SessionEnd":
       dropPendingFor(sessionId);
-      setHookStatus(sessionId, "idle", "Session ended", cwd);
+      setHookStatus(sessionId, "closed", "Session ended", cwd);
       break;
     case "UserPromptSubmit":
     case "PreToolUse":
@@ -298,6 +320,19 @@ app.post("/api/sessions/:id/reply", async (c) => {
   } catch {
     return c.json({ error: "iTerm refused - allow Automation for iTerm in System Settings" }, 500);
   }
+  return c.json({ ok: true });
+});
+
+app.post("/api/sessions/:id/close", async (c) => {
+  try {
+    const result = await closeSession(c.req.param("id"));
+    if (result === "not-running") return c.json({ error: "That session isn't running anymore" }, 409);
+    if (result === "not-in-iterm") return c.json({ error: "Couldn't find its iTerm tab" }, 409);
+    if (result === "still-running") return c.json({ error: "Claude is busy - /exit is queued, tab left open" }, 409);
+  } catch {
+    return c.json({ error: "iTerm refused - allow Automation for iTerm in System Settings" }, 500);
+  }
+  changed();
   return c.json({ ok: true });
 });
 

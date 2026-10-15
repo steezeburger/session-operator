@@ -34,6 +34,24 @@ on run argv
   return "missing"
 end run`;
 
+const CLOSE_ITERM_SESSION = `
+on run argv
+  set ttyName to "/dev/" & item 1 of argv
+  tell application "iTerm2"
+    repeat with w in windows
+      repeat with t in tabs of w
+        repeat with s in sessions of t
+          if tty of s is ttyName then
+            close s
+            return "ok"
+          end if
+        end repeat
+      end repeat
+    end repeat
+  end tell
+  return "missing"
+end run`;
+
 /** Session id -> pid for every Claude Code process that's still registered. */
 export async function liveSessions(): Promise<Map<string, number>> {
   const live = new Map<string, number>();
@@ -58,13 +76,44 @@ export async function liveSessions(): Promise<Map<string, number>> {
 
 export type ReplyResult = "sent" | "not-running" | "not-in-iterm";
 
+async function ttyOf(pid: number): Promise<string | null> {
+  const tty = (await run("ps", ["-o", "tty=", "-p", String(pid)])).stdout.trim();
+  return /^ttys\d+$/.test(tty) ? tty : null;
+}
+
+function alive(pid: number) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function sendReply(sessionId: string, text: string): Promise<ReplyResult> {
   const pid = (await liveSessions()).get(sessionId);
   if (!pid) return "not-running";
-  const tty = (await run("ps", ["-o", "tty=", "-p", String(pid)])).stdout.trim();
-  if (!/^ttys\d+$/.test(tty)) return "not-in-iterm";
+  const tty = await ttyOf(pid);
+  if (!tty) return "not-in-iterm";
   // A newline would submit early, so a multi-line reply goes in as one line.
   const line = text.replace(/\s*\n\s*/g, " ").trim().slice(0, MAX_REPLY);
   const { stdout } = await run("osascript", ["-e", TYPE_INTO_ITERM, tty, line], { timeout: 10_000 });
   return stdout.trim() === "ok" ? "sent" : "not-in-iterm";
+}
+
+export type CloseResult = "closed" | "not-running" | "not-in-iterm" | "still-running";
+
+// Exits Claude the normal way (/exit, so the transcript is saved), then closes its iTerm tab.
+// If Claude is mid-turn the /exit just queues, so the tab stays open and we say so.
+export async function closeSession(sessionId: string): Promise<CloseResult> {
+  const pid = (await liveSessions()).get(sessionId);
+  if (!pid) return "not-running";
+  const tty = await ttyOf(pid);
+  if (!tty) return "not-in-iterm";
+  const { stdout } = await run("osascript", ["-e", TYPE_INTO_ITERM, tty, "/exit"], { timeout: 10_000 });
+  if (stdout.trim() !== "ok") return "not-in-iterm";
+  for (let i = 0; i < 20 && alive(pid); i++) await new Promise((r) => setTimeout(r, 250));
+  if (alive(pid)) return "still-running";
+  await run("osascript", ["-e", CLOSE_ITERM_SESSION, tty], { timeout: 10_000 });
+  return "closed";
 }
