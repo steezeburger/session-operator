@@ -172,6 +172,7 @@ export function parseTranscript(id: string, text: string, mtime: Date): Session 
     refs: [],
     status,
     statusDetail,
+    turnEnd: apiError || (lastTurn.type === "user" && hasToolError(lastTurn)) ? "failing" : turnEnded ? "finished" : "mid-turn",
     lastActivity: lastActivity.toISOString(),
   };
 }

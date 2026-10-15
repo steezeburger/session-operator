@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Behavior, DeckState, PendingDecision, Ref, Session, SessionStatus } from "../../server/types.ts";
 import { MatrixRain } from "./MatrixRain.tsx";
-import { focusRefs, MetaTag, RefList, refLabel, WithMentions } from "./Refs.tsx";
+import { closedOutcome, focusRefs, MetaTag, RefList, refLabel, WithMentions } from "./Refs.tsx";
 import { ReplyBox } from "./ReplyBox.tsx";
 import { SessionDetail } from "./SessionDetail.tsx";
 
@@ -134,8 +134,10 @@ function repoName(s: Session) {
 function SessionRow({ s, now, onOpen }: { s: Session; now: number; onOpen: () => void }) {
   const style = STATUS_STYLE[s.status];
   const { own: refs, meta } = focusRefs(s);
+  const outcome = s.status === "closed" ? closedOutcome(s) : null;
   const next =
-    s.status === "blocked" ? (s.blockedOn ?? "-") : s.status === "waiting" || s.status === "failing" ? s.statusDetail : style.next;
+    outcome?.text ??
+    (s.status === "blocked" ? (s.blockedOn ?? "-") : s.status === "waiting" || s.status === "failing" ? s.statusDetail : style.next);
   return (
     <button
       type="button"
@@ -160,7 +162,7 @@ function SessionRow({ s, now, onOpen }: { s: Session; now: number; onOpen: () =>
         {refs[0]?.title ?? s.title ?? "-"}
       </div>
       <div
-        className={`hidden truncate px-1.5 py-0.5 font-bold uppercase md:block ${s.status === "blocked" ? "text-blocked [text-shadow:0_0_4px_rgb(0_229_255/0.6)]" : ""}`}
+        className={`hidden truncate px-1.5 py-0.5 font-bold uppercase md:block ${s.status === "blocked" ? "text-blocked [text-shadow:0_0_4px_rgb(0_229_255/0.6)]" : (outcome?.cls ?? "")}`}
         title={next}
       >
         {next}

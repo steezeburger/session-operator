@@ -28,6 +28,30 @@ export function focusRefs(s: Session): { own: Ref[]; mentioned: Ref[]; meta: boo
   return { own: [], mentioned: mentions, meta: mentions.length > 0 };
 }
 
+const SHIPPED = "text-[#b48cff] [text-shadow:0_0_4px_rgb(180_140_255/0.6)]";
+
+/**
+ * Where a closed session left its work: the PR decides if there is one, then the card,
+ * then how its last turn ended.
+ */
+export function closedOutcome(s: Session): { text: string; cls: string } {
+  const { own, meta } = focusRefs(s);
+  const pr = own.find((r) => r.kind === "pr");
+  const card = own.find((r) => r.kind === "card");
+  if (pr?.state === "merged") return { text: `shipped · ${refLabel(pr)} merged`, cls: SHIPPED };
+  if (pr?.state === "open" || pr?.state === "draft") {
+    return { text: `left in review · ${refLabel(pr)} ${pr.state}`, cls: "text-blocked" };
+  }
+  if (pr?.state === "closed") return { text: `abandoned · ${refLabel(pr)} closed`, cls: "text-fail" };
+  if (card && (card.state === "released" || card.state === "done")) {
+    return { text: `shipped · ${refLabel(card)} ${card.state}`, cls: SHIPPED };
+  }
+  const where = card ? ` · ${refLabel(card)} ${card.state}` : meta ? " · meta" : "";
+  if (s.turnEnd === "failing") return { text: `closed while failing${where}`, cls: "text-fail" };
+  if (s.turnEnd === "mid-turn") return { text: `abandoned mid-turn${where}`, cls: "text-needs" };
+  return { text: `${card ? "no PR" : "finished"}${where}`, cls: "text-code-dim" };
+}
+
 export function MetaTag() {
   return (
     <span

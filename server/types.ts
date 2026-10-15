@@ -25,6 +25,8 @@ export interface Session {
   refs: Ref[];
   status: SessionStatus;
   statusDetail: string;
+  /** How the transcript's last turn ended, whatever the status says now. Null for hook-only sessions. */
+  turnEnd: "finished" | "mid-turn" | "failing" | null;
   lastActivity: string;
 }
 

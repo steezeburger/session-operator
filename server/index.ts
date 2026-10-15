@@ -119,6 +119,7 @@ async function buildState(): Promise<DeckState> {
         refs: [],
         status: hs.status,
         statusDetail: hs.detail,
+        turnEnd: null,
         lastActivity: new Date(hs.at).toISOString(),
       });
     } else if (hs.at >= new Date(s.lastActivity).getTime()) {

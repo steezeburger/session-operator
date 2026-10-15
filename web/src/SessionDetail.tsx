@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { FeedItem, Session } from "../../server/types.ts";
-import { focusRefs, MetaTag, RefList } from "./Refs.tsx";
+import { closedOutcome, focusRefs, MetaTag, RefList } from "./Refs.tsx";
 import { ReplyBox } from "./ReplyBox.tsx";
 
 const KIND_STYLE: Record<FeedItem["kind"], { label: string; cls: string }> = {
@@ -81,7 +81,7 @@ export function SessionDetail({ session, onClose }: { session: Session; onClose:
               </details>
             )}
             <div className="truncate text-code-dim">
-              {session.statusDetail} · {session.cwd}
+              {session.status === "closed" ? closedOutcome(session).text : session.statusDetail} · {session.cwd}
             </div>
           </div>
           <div className="flex shrink-0 flex-col items-end gap-1">
