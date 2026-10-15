@@ -22,6 +22,7 @@ interface TranscriptRecord {
   lastPrompt?: string;
   isApiErrorMessage?: boolean;
   message?: { stop_reason?: string | null; content?: unknown };
+  attachment?: { type?: string; prompt?: unknown; origin?: { kind?: string } };
 }
 
 function hasToolError(r: TranscriptRecord): boolean {
@@ -254,8 +255,15 @@ export async function readFeed(id: string): Promise<FeedItem[] | null> {
       } catch {
         continue;
       }
-      if (r.isSidechain || (r.type !== "user" && r.type !== "assistant")) continue;
+      if (r.isSidechain) continue;
       const at = r.timestamp ?? null;
+      // Messages typed while Claude is mid-turn are stored as queued_command attachments, not user records.
+      const a = r.attachment;
+      if (r.type === "attachment" && a?.type === "queued_command" && a.origin?.kind === "human" && typeof a.prompt === "string") {
+        if (a.prompt.trim()) feed.push({ kind: "user", text: clipFeed(a.prompt.trim()), at });
+        continue;
+      }
+      if (r.type !== "user" && r.type !== "assistant") continue;
       const content = r.message?.content;
       if (r.isApiErrorMessage) {
         feed.push({ kind: "error", text: clipFeed(assistantText(r) ?? "API error"), at });
