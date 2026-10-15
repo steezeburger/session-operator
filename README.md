@@ -3,6 +3,10 @@
 One calm page for all the Claude Code sessions running on this Mac. It shows what each
 session is doing, and when one needs a permission you can approve or deny it here.
 
+![Session operator with sessions that need approval, need a reply, are failing, waiting on CI, working, idle and closed](docs/screenshot.png)
+
+<sub>Demo data. The sessions, cards and PRs in the screenshot are made up.</sub>
+
 ## Run it
 
 ```sh
