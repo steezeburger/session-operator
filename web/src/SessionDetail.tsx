@@ -1,7 +1,7 @@
 import { type CSSProperties, type PointerEvent as ReactPointerEvent, useEffect, useRef, useState } from "react";
 import type { FeedItem, Session } from "../../server/types.ts";
 import { closedOutcome, focusRefs, MetaTag, RefList } from "./Refs.tsx";
-import { ReplyBox } from "./ReplyBox.tsx";
+import { imageFiles, ReplyBox } from "./ReplyBox.tsx";
 
 const KIND_STYLE: Record<FeedItem["kind"], { label: string; cls: string }> = {
   user: { label: "you", cls: "border-code text-white [text-shadow:0_0_4px_rgb(214_255_223/0.5)]" },
@@ -52,6 +52,9 @@ export function SessionDetail({ session, onClose }: { session: Session; onClose:
   const focus = focusRefs(session);
   const [width, setWidth] = useState(savedWidth);
   const resizing = useRef(false);
+  // Images dropped anywhere on the panel wait in the reply box.
+  const images = useState<File[]>([]);
+  const [dragging, setDragging] = useState(false);
 
   // Drag the panel's left edge; the width sticks for next time.
   const startResize = (e: ReactPointerEvent) => {
@@ -126,7 +129,27 @@ export function SessionDetail({ session, onClose }: { session: Session; onClose:
           e.currentTarget.querySelector<HTMLTextAreaElement>("footer textarea")?.focus();
         }}
         aria-label={`${session.project} session`}
+        onDragOver={(e) => {
+          if (!session.live || !e.dataTransfer.types.includes("Files")) return;
+          e.preventDefault();
+          setDragging(true);
+        }}
+        onDragLeave={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false);
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragging(false);
+          if (!session.live) return;
+          const files = imageFiles(e.dataTransfer.files);
+          if (files.length > 0) images[1]((prev) => [...prev, ...files]);
+        }}
       >
+        {dragging && (
+          <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center border-2 border-dashed border-code bg-black/80 text-sm font-bold uppercase tracking-widest">
+            drop image to attach
+          </div>
+        )}
         <div
           data-resize
           title="Drag to resize"
@@ -188,7 +211,7 @@ export function SessionDetail({ session, onClose }: { session: Session; onClose:
 
         <footer className="border-t border-code-dim p-2">
           {session.live ? (
-            <ReplyBox sessionId={session.id} say={session.nextSay} autoFocus />
+            <ReplyBox sessionId={session.id} say={session.nextSay} autoFocus images={images} />
           ) : (
             <p className="text-xs text-code-dim">not running - can't reply from here</p>
           )}

@@ -1,6 +1,9 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
@@ -322,6 +325,24 @@ app.post("/api/sessions/:id/reply", async (c) => {
     return c.json({ error: "iTerm refused - allow Automation for iTerm in System Settings" }, 500);
   }
   return c.json({ ok: true });
+});
+
+// Images dropped into a reply. Saved to a temp file; the reply then types the path, which
+// Claude Code turns into an attached image.
+const UPLOAD_DIR = join(tmpdir(), "session-operator-uploads");
+const IMAGE_TYPES: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp" };
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+
+app.post("/api/uploads", async (c) => {
+  const { type, data } = (await c.req.json()) as { type?: unknown; data?: unknown };
+  const ext = typeof type === "string" ? IMAGE_TYPES[type] : undefined;
+  if (!ext || typeof data !== "string") return c.json({ error: "png, jpeg, gif or webp only" }, 400);
+  const bytes = Buffer.from(data, "base64");
+  if (bytes.length === 0 || bytes.length > MAX_IMAGE_BYTES) return c.json({ error: "image must be under 10MB" }, 413);
+  await mkdir(UPLOAD_DIR, { recursive: true });
+  const path = join(UPLOAD_DIR, `${randomUUID()}.${ext}`);
+  await writeFile(path, bytes);
+  return c.json({ path });
 });
 
 app.post("/api/sessions/:id/close", async (c) => {
