@@ -52,14 +52,22 @@ export function ReplyBox({ sessionId, say, autoFocus }: { sessionId: string; say
             say "{say}"
           </button>
         )}
-        <div className="flex min-w-0 flex-1 items-center border border-code-dim bg-black focus-within:border-code">
-          <span className="pl-2 text-code-dim">{">"}</span>
-          <input
+        <div className="flex min-w-0 flex-1 items-start border border-code-dim bg-black focus-within:border-code">
+          <span className="py-1 pl-2 text-sm text-code-dim">{">"}</span>
+          <textarea
             value={text}
             onChange={(e) => setText(e.target.value)}
-            placeholder="reply to claude"
+            onKeyDown={(e) => {
+              // Enter sends, Shift+Enter is a new line.
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                void send(text);
+              }
+            }}
+            rows={Math.min(8, text.split("\n").length)}
+            placeholder="reply to claude (shift+enter for a new line)"
             autoFocus={autoFocus}
-            className="min-w-0 flex-1 bg-transparent px-2 py-1 text-sm text-white caret-code outline-none placeholder:text-code-dark"
+            className="min-w-0 flex-1 resize-none bg-transparent px-2 py-1 text-sm text-white caret-code outline-none placeholder:text-code-dark"
           />
         </div>
         <button

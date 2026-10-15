@@ -95,8 +95,8 @@ export async function sendReply(sessionId: string, text: string): Promise<ReplyR
   if (!pid) return "not-running";
   const tty = await ttyOf(pid);
   if (!tty) return "not-in-iterm";
-  // A newline would submit early, so a multi-line reply goes in as one line.
-  const line = text.replace(/\s*\n\s*/g, " ").trim().slice(0, MAX_REPLY);
+  // iTerm types each \n as a line feed, which Claude Code takes as "new line", not submit.
+  const line = text.replace(/\r\n?/g, "\n").trim().slice(0, MAX_REPLY);
   const { stdout } = await run("osascript", ["-e", TYPE_INTO_ITERM, tty, line], { timeout: 10_000 });
   return stdout.trim() === "ok" ? "sent" : "not-in-iterm";
 }

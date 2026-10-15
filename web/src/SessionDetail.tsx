@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { type CSSProperties, type PointerEvent as ReactPointerEvent, useEffect, useRef, useState } from "react";
 import type { FeedItem, Session } from "../../server/types.ts";
 import { closedOutcome, focusRefs, MetaTag, RefList } from "./Refs.tsx";
 import { ReplyBox } from "./ReplyBox.tsx";
@@ -10,6 +10,37 @@ const KIND_STYLE: Record<FeedItem["kind"], { label: string; cls: string }> = {
   error: { label: "error", cls: "border-fail text-fail [text-shadow:0_0_4px_rgb(255_42_42/0.6)]" },
 };
 
+const WIDTH_KEY = "deck.panelWidth";
+const MIN_WIDTH = 360;
+
+function savedWidth() {
+  try {
+    const w = Number(localStorage.getItem(WIDTH_KEY));
+    if (w >= MIN_WIDTH) return w;
+  } catch {
+    // storage blocked: use the default
+  }
+  return 640;
+}
+
+const URL_RE = /(https?:\/\/[^\s<>"'`)\]]+[^\s<>"'`)\].,;:!?])/g;
+
+function Linkified({ text }: { text: string }) {
+  return (
+    <>
+      {text.split(URL_RE).map((part, i) =>
+        i % 2 === 1 ? (
+          <a key={i} href={part} target="_blank" rel="noreferrer" className="text-white underline decoration-code-dim underline-offset-2 hover:decoration-code">
+            {part}
+          </a>
+        ) : (
+          part
+        ),
+      )}
+    </>
+  );
+}
+
 function time(iso: string | null) {
   return iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
 }
@@ -19,6 +50,37 @@ export function SessionDetail({ session, onClose }: { session: Session; onClose:
   const [missing, setMissing] = useState(false);
   const bottom = useRef<HTMLDivElement>(null);
   const focus = focusRefs(session);
+  const [width, setWidth] = useState(savedWidth);
+  const resizing = useRef(false);
+
+  // Drag the panel's left edge; the width sticks for next time.
+  const startResize = (e: ReactPointerEvent) => {
+    e.preventDefault();
+    const clamp = (x: number) => Math.min(window.innerWidth - 80, Math.max(MIN_WIDTH, window.innerWidth - x));
+    let last = width;
+    resizing.current = true;
+    const move = (ev: PointerEvent) => {
+      last = clamp(ev.clientX);
+      setWidth(last);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      document.body.style.userSelect = "";
+      // The click that ends a drag lands on the backdrop; don't let it close the panel.
+      setTimeout(() => {
+        resizing.current = false;
+      });
+      try {
+        localStorage.setItem(WIDTH_KEY, String(last));
+      } catch {
+        // storage blocked: width just won't stick
+      }
+    };
+    document.body.style.userSelect = "none";
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
 
   useEffect(() => {
     let live = true;
@@ -51,19 +113,26 @@ export function SessionDetail({ session, onClose }: { session: Session; onClose:
   }, [onClose]);
 
   return (
-    <div className="fixed inset-0 z-40 flex justify-end bg-black/60" onClick={onClose}>
+    <div className="fixed inset-0 z-40 flex justify-end bg-black/60" onClick={() => !resizing.current && onClose()}>
       <aside
-        className="glow flex h-full w-full flex-col border-l border-code-dim bg-black md:w-[40rem]"
+        className="glow relative flex h-full w-full flex-col border-l border-code-dim bg-black md:w-[var(--panel-w)]"
+        style={{ "--panel-w": `${width}px` } as CSSProperties}
         onClick={(e) => {
           e.stopPropagation();
           // Any click in the panel goes to the reply input, except on controls or while
           // selecting text to copy.
-          if ((e.target as Element).closest("a, button, input, summary, details")) return;
+          if ((e.target as Element).closest("a, button, input, textarea, summary, details, [data-resize]")) return;
           if (window.getSelection()?.toString()) return;
-          e.currentTarget.querySelector<HTMLInputElement>("footer input")?.focus();
+          e.currentTarget.querySelector<HTMLTextAreaElement>("footer textarea")?.focus();
         }}
         aria-label={`${session.project} session`}
       >
+        <div
+          data-resize
+          title="Drag to resize"
+          onPointerDown={startResize}
+          className="absolute inset-y-0 -left-1 z-10 hidden w-2 cursor-col-resize hover:bg-code/40 md:block"
+        />
         <header className="relative flex items-start justify-between gap-2 border-b border-code-dim p-2">
           <div className="min-w-0 text-xs">
             <div className="truncate text-sm font-bold">
@@ -108,7 +177,9 @@ export function SessionDetail({ session, onClose }: { session: Session; onClose:
                 <div className="text-[10px] uppercase tracking-widest text-code-dim">
                   {k.label} {time(item.at)}
                 </div>
-                <div className="whitespace-pre-wrap break-words">{item.text}</div>
+                <div className="whitespace-pre-wrap break-words">
+                  <Linkified text={item.text} />
+                </div>
               </div>
             );
           })}
