@@ -3,7 +3,7 @@ import { useEffect, useRef } from "react";
 const GLYPHS = "ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ0123456789Z:.=*+-<>¦";
 const SIZE = 16;
 
-// Digital rain behind the deck. Dim on purpose so the rows stay readable.
+// Digital rain behind the operator. Dim on purpose so the rows stay readable.
 export function MatrixRain() {
   const ref = useRef<HTMLCanvasElement>(null);
 

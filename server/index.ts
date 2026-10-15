@@ -10,9 +10,9 @@ import { nextActionFor } from "./next-action.ts";
 import { refsFor } from "./refs.ts";
 import { closeSession, liveSessions, sendReply } from "./reply.ts";
 import { fullReplies, mentionCounts, readFeed, scanSessions } from "./sessions.ts";
-import type { Behavior, DeckState, PendingDecision, Session, SessionStatus } from "./types.ts";
+import type { Behavior, OperatorState, PendingDecision, Session, SessionStatus } from "./types.ts";
 
-const PORT = Number(process.env.DECK_PORT ?? 4477);
+const PORT = Number(process.env.OPERATOR_PORT ?? 4477);
 const HOST = "127.0.0.1";
 const DEFAULT_TIMEOUT_MS = 120_000;
 const WAIT_SLICE_MS = 25_000;
@@ -44,7 +44,7 @@ function changed() {
 
 // osascript gets the text as argv, never interpolated into the script.
 function notify(title: string, message: string) {
-  if (process.env.DECK_NOTIFY === "0") return;
+  if (process.env.OPERATOR_NOTIFY === "0") return;
   execFile(
     "osascript",
     [
@@ -94,7 +94,7 @@ const STATUS_ORDER: Record<SessionStatus, number> = { failing: 0, waiting: 1, do
 // Closed sessions stay listed this long after their last activity, then drop off.
 const CLOSED_SHOWN_MS = 24 * 60 * 60 * 1000;
 
-async function buildState(): Promise<DeckState> {
+async function buildState(): Promise<OperatorState> {
   const fromTranscripts = await scanSessions();
   const byId = new Map<string, Session>(fromTranscripts.map((s) => [s.id, s]));
 
@@ -223,7 +223,7 @@ app.post("/api/hook", async (c) => {
   switch (event) {
     case "PermissionRequest": {
       const toolName = str(body.tool_name) ?? "tool";
-      const timeoutMs = Number(body.deck_timeout_ms) || DEFAULT_TIMEOUT_MS;
+      const timeoutMs = Number(body.operator_timeout_ms) || DEFAULT_TIMEOUT_MS;
       const now = Date.now();
       const entry: PendingEntry = {
         id: randomUUID(),
@@ -382,5 +382,5 @@ if (existsSync(dist)) {
 }
 
 serve({ fetch: app.fetch, port: PORT, hostname: HOST }, () => {
-  console.log(`session deck server on http://${HOST}:${PORT}`);
+  console.log(`session operator server on http://${HOST}:${PORT}`);
 });

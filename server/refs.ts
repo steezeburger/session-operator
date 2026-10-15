@@ -8,7 +8,7 @@ import type { Ref } from "./types.ts";
 const run = promisify(execFile);
 
 // Shortcut token: env first, else the aero repo's gitignored .mcp.json. Read-only GETs, never logged.
-const MCP_JSON = process.env.DECK_SHORTCUT_MCP_JSON ?? join(homedir(), "code", "tailwind", "aero", ".mcp.json");
+const MCP_JSON = process.env.OPERATOR_SHORTCUT_MCP_JSON ?? join(homedir(), "code", "tailwind", "aero", ".mcp.json");
 const SHORTCUT_API = "https://api.app.shortcut.com/api/v3";
 const CARD_TTL_MS = 10 * 60 * 1000;
 const PR_TTL_MS = 2 * 60 * 1000;

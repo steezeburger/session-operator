@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import type { Behavior, DeckState, PendingDecision, Ref, Session, SessionStatus } from "../../server/types.ts";
+import type { Behavior, OperatorState, PendingDecision, Ref, Session, SessionStatus } from "../../server/types.ts";
 import { MatrixRain } from "./MatrixRain.tsx";
 import { closedOutcome, focusRefs, MetaTag, RefList, refLabel, WithMentions } from "./Refs.tsx";
 import { ReplyBox } from "./ReplyBox.tsx";
@@ -43,8 +43,8 @@ function useNow(ms = 1000) {
   return now;
 }
 
-function useDeckState() {
-  const [state, setState] = useState<DeckState | null>(null);
+function useOperatorState() {
+  const [state, setState] = useState<OperatorState | null>(null);
   const [offline, setOffline] = useState(false);
 
   const refresh = useCallback(async () => {
@@ -270,7 +270,7 @@ function SessionTable({ sessions, now, onOpen }: { sessions: Session[]; now: num
 }
 
 export function App() {
-  const { state, offline, refresh } = useDeckState();
+  const { state, offline, refresh } = useOperatorState();
   const now = useNow();
   const [openId, setOpenId] = useState<string | null>(null);
   const close = useCallback(() => setOpenId(null), []);
@@ -297,7 +297,7 @@ export function App() {
     <main className="mx-auto max-w-6xl px-4 py-4">
       <MatrixRain />
       <header className={`${BORDER} glow flex items-baseline justify-between bg-black/85 px-2 py-1`}>
-        <h1 className="cursor text-sm font-bold uppercase tracking-widest">Session deck</h1>
+        <h1 className="cursor text-sm font-bold uppercase tracking-widest">Session operator</h1>
         {offline ? (
           <span className="pulse bg-fail px-2 text-xs font-bold uppercase text-black [text-shadow:none]">connection lost</span>
         ) : (

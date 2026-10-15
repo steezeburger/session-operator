@@ -17,7 +17,7 @@ export interface Session {
   nextSay: string | null;
   /** True while the next action is still being worked out. */
   nextLoading: boolean;
-  /** A Claude process for this session is running, so the deck can type a reply into it. */
+  /** A Claude process for this session is running, so the operator can type a reply into it. */
   live: boolean;
   /** What the session is waiting on outside Jesse (CI, a deploy, a review), when status is "blocked". */
   blockedOn: string | null;
@@ -54,7 +54,7 @@ export interface PendingDecision {
   expiresAt: string;
 }
 
-export interface DeckState {
+export interface OperatorState {
   pending: PendingDecision[];
   sessions: Session[];
 }

@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// Claude Code hook -> session deck bridge.
+// Claude Code hook -> operator bridge.
 // Every failure path exits 0 with no output, which tells Claude Code to carry on
 // exactly as if this hook didn't exist (for permissions: show its normal prompt).
-// It never approves anything on its own; only an explicit click in the deck does.
+// It never approves anything on its own; only an explicit click in operator does.
 
-const BASE = process.env.DECK_URL ?? "http://127.0.0.1:4477";
-const TIMEOUT_MS = Number(process.env.DECK_TIMEOUT_MS ?? 120000);
+const BASE = process.env.OPERATOR_URL ?? "http://127.0.0.1:4477";
+const TIMEOUT_MS = Number(process.env.OPERATOR_TIMEOUT_MS ?? 120000);
 
 async function readStdin() {
   const chunks = [];
@@ -43,11 +43,11 @@ async function main() {
     await post("/api/hook", payload, 1500);
     return;
   }
-  const { id } = await post("/api/hook", { ...payload, deck_timeout_ms: TIMEOUT_MS }, 2000);
+  const { id } = await post("/api/hook", { ...payload, operator_timeout_ms: TIMEOUT_MS }, 2000);
   const decision = id ? await waitForDecision(id) : null;
   if (!decision || (decision.behavior !== "allow" && decision.behavior !== "deny")) return;
   const out = { behavior: decision.behavior };
-  if (decision.behavior === "deny") out.message = decision.message || "Denied from session deck";
+  if (decision.behavior === "deny") out.message = decision.message || "Denied from operator";
   process.stdout.write(
     JSON.stringify({
       hookSpecificOutput: { hookEventName: "PermissionRequest", decision: out },

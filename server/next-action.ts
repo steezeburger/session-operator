@@ -41,8 +41,8 @@ Candidate links:
 const URL_RE = /https?:\/\/[^\s)`'"<>\]]+/g;
 const PR_RE = /\b(?:PR|pull request|pr (?:checks|view|merge))\s*#?(\d{2,6})\b/gi;
 
-// The model never runs in a project dir, so it can't pick up CLAUDE.md or show up in the deck.
-const WORK_DIR = mkdtempSync(join(tmpdir(), "session-deck-"));
+// The model never runs in a project dir, so it can't pick up CLAUDE.md or show up in the operator.
+const WORK_DIR = mkdtempSync(join(tmpdir(), "session-operator-"));
 const MAX_CONCURRENT = 2;
 
 const cache = new Map<string, { hash: string; result: NextAction | null }>();
