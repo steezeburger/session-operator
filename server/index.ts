@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -39,6 +39,23 @@ interface HookStatus {
 
 const pending = new Map<string, PendingEntry>();
 const hookStatus = new Map<string, HookStatus>();
+
+// Sessions started with `sop operator`. Kept on disk so a server restart doesn't forget them.
+const ROLES_FILE = join(tmpdir(), "session-operator-roles.json");
+const operatorIds = new Set<string>(
+  (() => {
+    try {
+      return JSON.parse(readFileSync(ROLES_FILE, "utf8")) as string[];
+    } catch {
+      return [];
+    }
+  })(),
+);
+function markOperator(sessionId: string) {
+  if (operatorIds.has(sessionId)) return;
+  operatorIds.add(sessionId);
+  void writeFile(ROLES_FILE, JSON.stringify([...operatorIds])).catch(() => {});
+}
 const listeners = new Set<() => void>();
 
 function changed() {
@@ -123,6 +140,7 @@ async function buildState(): Promise<OperatorState> {
         status: hs.status,
         statusDetail: hs.detail,
         turnEnd: null,
+        role: null,
         lastActivity: new Date(hs.at).toISOString(),
       });
     } else if (hs.at >= new Date(s.lastActivity).getTime()) {
@@ -134,6 +152,7 @@ async function buildState(): Promise<OperatorState> {
   const live = await liveSessions();
   for (const [id, s] of byId) {
     s.live = live.has(id);
+    if (operatorIds.has(id)) s.role = "operator";
     if (s.live) continue;
     // No Claude process behind it: whatever the transcript last said, nobody can act on it now.
     if (Date.now() - new Date(s.lastActivity).getTime() > CLOSED_SHOWN_MS) {
@@ -147,7 +166,8 @@ async function buildState(): Promise<OperatorState> {
   // "Your move" sessions get a specific next step from Haiku; the regex guess stays as fallback.
   for (const s of byId.values()) {
     const text = fullReplies.get(s.id);
-    if ((s.status !== "done" && s.status !== "working") || !text) continue;
+    // The operator is the controller, not a worker: no next step of its own.
+    if (s.role === "operator" || (s.status !== "done" && s.status !== "working") || !text) continue;
     const ai = nextActionFor(s.id, s.cwd, text, changed);
     // A working session only borrows "waiting on X" (e.g. polling a deploy); its asks aren't final yet.
     if (s.status === "working") {
@@ -173,7 +193,7 @@ async function buildState(): Promise<OperatorState> {
 
   await Promise.all(
     [...byId.values()]
-      .filter((s) => s.status !== "idle")
+      .filter((s) => s.status !== "idle" && s.role !== "operator")
       .map(async (s) => {
         s.refs = await refsFor(s.cwd, s.branch, mentionCounts.get(s.id) ?? new Map(), changed);
       }),
@@ -200,6 +220,58 @@ async function buildState(): Promise<OperatorState> {
   return { pending: pendingList, sessions };
 }
 
+// Nudges: when a worker has needed Jesse for a while, the operator session hears about it.
+// Each state nudges once, only after it has lasted NUDGE_DELAY_MS (so a tab he's already
+// answering stays quiet), at most one bundled message per NUDGE_GAP_MS, and never while
+// the operator is mid-turn. OPERATOR_NUDGES=0 turns them off.
+const NUDGE_DELAY_MS = 2 * 60 * 1000;
+const NUDGE_GAP_MS = 2 * 60 * 1000;
+const NUDGE_TICK_MS = 30 * 1000;
+const NUDGE_STATUSES: SessionStatus[] = ["waiting", "done", "failing"];
+const nudgeFirstSeen = new Map<string, number>();
+const nudged = new Set<string>();
+let lastNudgeAt = 0;
+
+function sessionLabel(s: Session): string {
+  const card = s.refs.find((r) => r.source === "own" && r.kind === "card");
+  return card ? `sc-${card.id}` : s.branch && s.branch !== "main" ? `${s.project} (${s.branch})` : s.project;
+}
+
+async function nudgeTick() {
+  if (process.env.OPERATOR_NUDGES === "0") return;
+  const { sessions } = await buildState();
+  const op = sessions.find((s) => s.role === "operator" && s.live);
+  if (!op) return;
+  const now = Date.now();
+  const current = new Set<string>();
+  const ready: { key: string; line: string }[] = [];
+  for (const s of sessions) {
+    if (s.role === "operator" || !s.live || !NUDGE_STATUSES.includes(s.status)) continue;
+    const what = s.status === "done" ? (s.nextAction ?? "finished its turn") : s.statusDetail;
+    const key = `${s.id}|${s.status}|${what}`;
+    current.add(key);
+    if (!nudgeFirstSeen.has(key)) nudgeFirstSeen.set(key, now);
+    if (nudged.has(key) || now - (nudgeFirstSeen.get(key) ?? now) < NUDGE_DELAY_MS) continue;
+    ready.push({ key, line: s.status === "failing" ? `${sessionLabel(s)} (failing)` : sessionLabel(s) });
+  }
+  for (const key of nudgeFirstSeen.keys()) {
+    if (!current.has(key)) {
+      nudgeFirstSeen.delete(key);
+      nudged.delete(key);
+    }
+  }
+  if (ready.length === 0 || now - lastNudgeAt < NUDGE_GAP_MS) return;
+  if (op.status === "working" || op.status === "waiting" || op.status === "blocked") return;
+  // Names only. The details are one click away; a summary of each one is just noise.
+  const text = `[operator nudge] ${ready.map((r) => r.line).join(", ")}`;
+  const result = await sendReply(op.id, text).catch(() => null);
+  if (result !== "sent") return;
+  lastNudgeAt = now;
+  for (const r of ready) nudged.add(r.key);
+}
+
+setInterval(() => void nudgeTick().catch(() => {}), NUDGE_TICK_MS);
+
 const app = new Hono();
 
 // Localhost only: reject DNS-rebinding hosts and cross-site browser requests.
@@ -221,6 +293,7 @@ app.post("/api/hook", async (c) => {
   const event = str(body.hook_event_name) ?? "";
   const sessionId = str(body.session_id) ?? "unknown";
   const cwd = str(body.cwd);
+  if (body.operator_role === "operator") markOperator(sessionId);
   const project = projectName(cwd);
 
   switch (event) {

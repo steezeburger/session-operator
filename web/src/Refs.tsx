@@ -13,19 +13,11 @@ const STATE_STYLE: Record<string, string> = {
 };
 
 /**
- * What a session is about vs. what it only talked about. Its branch card/PR are its own.
- * A session on main that keeps coming back to one card (twice as often as any other) is
- * working that card; one spread across several (planning, triage, "what's next") is meta.
+ * What a session is about vs. what it only talked about. Only its branch decides what it's
+ * about; guessing from mentions kept labeling planning sessions with whatever card came up.
  */
-export function focusRefs(s: Session): { own: Ref[]; mentioned: Ref[]; meta: boolean } {
-  const own = s.refs.filter((r) => r.source === "own");
-  const mentions = s.refs.filter((r) => r.source === "mention");
-  if (own.length > 0) return { own, mentioned: mentions, meta: false };
-  const [first, second] = mentions.filter((r) => r.kind === "card").sort((a, b) => b.mentions - a.mentions);
-  if (first && (!second || first.mentions >= 2 * second.mentions)) {
-    return { own: [first], mentioned: mentions.filter((r) => r !== first), meta: false };
-  }
-  return { own: [], mentioned: mentions, meta: mentions.length > 0 };
+export function focusRefs(s: Session): { own: Ref[]; mentioned: Ref[] } {
+  return { own: s.refs.filter((r) => r.source === "own"), mentioned: s.refs.filter((r) => r.source === "mention") };
 }
 
 const SHIPPED = "text-[#b48cff] [text-shadow:0_0_4px_rgb(180_140_255/0.6)]";
@@ -35,7 +27,7 @@ const SHIPPED = "text-[#b48cff] [text-shadow:0_0_4px_rgb(180_140_255/0.6)]";
  * then how its last turn ended.
  */
 export function closedOutcome(s: Session): { text: string; cls: string } {
-  const { own, meta } = focusRefs(s);
+  const { own } = focusRefs(s);
   const pr = own.find((r) => r.kind === "pr");
   const card = own.find((r) => r.kind === "card");
   if (pr?.state === "merged") return { text: `shipped · ${refLabel(pr)} merged`, cls: SHIPPED };
@@ -46,22 +38,12 @@ export function closedOutcome(s: Session): { text: string; cls: string } {
   if (card && (card.state === "released" || card.state === "done")) {
     return { text: `shipped · ${refLabel(card)} ${card.state}`, cls: SHIPPED };
   }
-  const where = card ? ` · ${refLabel(card)} ${card.state}` : meta ? " · meta" : "";
+  const where = card ? ` · ${refLabel(card)} ${card.state}` : "";
   if (s.turnEnd === "failing") return { text: `closed while failing${where}`, cls: "text-fail" };
   if (s.turnEnd === "mid-turn") return { text: `abandoned mid-turn${where}`, cls: "text-needs" };
   return { text: `${card ? "no PR" : "finished"}${where}`, cls: "text-code-dim" };
 }
 
-export function MetaTag() {
-  return (
-    <span
-      title="Talks about several cards/PRs without working on one (planning, triage)"
-      className="border border-code-dim px-1 text-[10px] uppercase tracking-widest text-code-dim"
-    >
-      meta
-    </span>
-  );
-}
 
 export function refLabel(r: Ref) {
   return r.kind === "card" ? `sc-${r.id}` : `PR #${r.id}`;

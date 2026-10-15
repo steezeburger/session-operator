@@ -1,0 +1,175 @@
+#!/usr/bin/env node
+// sop (session operator): starts the operator, and is the operator's console for listing,
+// reading, messaging, starting and ending Claude Code sessions through the server.
+
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const BASE = process.env.OPERATOR_URL ?? "http://127.0.0.1:4477";
+
+const USAGE = `sop - session operator
+
+  sop operator [claude args...]   start the operator session in this terminal
+
+  sop ls                          every session: who, status, what it needs
+  sop feed <who> [n]              a session's last n messages (default 12)
+  sop say <who> <text...>         type a message into a session and press Enter
+  sop end <who>                   /exit a session and close its iTerm tab
+  sop start <dir> [options] <prompt...>
+      --worktree <branch>          make a git worktree for <branch> off --base first
+      --base <ref>                 base for the new branch (default origin/main)
+      --badge <label>              iTerm badge for the new tab
+
+<who> is a session id prefix, a card like sc-8121, a project name, or part of a branch.`;
+
+function die(msg) {
+  console.error(msg);
+  process.exit(1);
+}
+
+async function api(path, init) {
+  let res;
+  try {
+    res = await fetch(BASE + path, init);
+  } catch {
+    die(`session operator server isn't running at ${BASE}`);
+  }
+  const body = res.headers.get("content-type")?.includes("json") ? await res.json() : await res.text();
+  if (!res.ok) die(typeof body === "object" && body?.error ? body.error : `${path}: ${res.status}`);
+  return body;
+}
+
+const post = (path, body) =>
+  api(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+
+function label(s) {
+  const card = s.refs.find((r) => r.source === "own" && r.kind === "card");
+  if (card) return `sc-${card.id}`;
+  return s.branch && s.branch !== "main" ? `${s.project} (${s.branch})` : s.project;
+}
+
+function need(s) {
+  if (s.status === "blocked") return `waiting on ${s.blockedOn}`;
+  if (s.status === "done") return s.nextAction ?? "finished its turn";
+  return s.statusDetail;
+}
+
+async function find(who) {
+  const { sessions } = await api("/api/state");
+  const w = who.toLowerCase();
+  const matches = sessions.filter(
+    (s) =>
+      s.id.startsWith(w) ||
+      (w === "operator" && s.role === "operator") ||
+      label(s).toLowerCase() === w ||
+      s.refs.some((r) => r.source === "own" && `sc-${r.id}` === w) ||
+      s.project.toLowerCase() === w ||
+      (s.branch ?? "").toLowerCase().includes(w),
+  );
+  // Prefer running sessions when an old closed one matches too.
+  const live = matches.filter((s) => s.live);
+  const pick = live.length > 0 ? live : matches;
+  if (pick.length === 0) die(`no session matches "${who}" - try sop ls`);
+  if (pick.length > 1) die(`"${who}" matches ${pick.length} sessions:\n${pick.map((s) => `  ${s.id.slice(0, 8)}  ${label(s)}`).join("\n")}`);
+  return pick[0];
+}
+
+async function ls() {
+  const { sessions, pending } = await api("/api/state");
+  for (const s of sessions) {
+    const role = s.role === "operator" ? " (operator)" : "";
+    console.log(`${s.id.slice(0, 8)}  ${s.status.padEnd(8)}  ${label(s)}${role}${s.live ? "" : " [not running]"}\n          ${need(s)}`);
+  }
+  for (const p of pending) console.log(`approval  ${p.sessionId.slice(0, 8)} wants ${p.toolName}: ${p.summary}`);
+}
+
+async function feed(who, n = "12") {
+  const s = await find(who);
+  const items = await api(`/api/sessions/${s.id}/feed`);
+  for (const f of items.slice(-Number(n))) {
+    // Tool lines get trimmed; messages print in full (the server already trims the middle of long ones).
+    const text = f.kind === "tool" && f.text.length > 300 ? `${f.text.slice(0, 300)}...` : f.text;
+    console.log(`[${f.kind}] ${text}\n`);
+  }
+}
+
+async function say(who, words) {
+  if (words.length === 0) die("sop say <who> <text>");
+  const s = await find(who);
+  await post(`/api/sessions/${s.id}/reply`, { text: words.join(" ") });
+  console.log(`sent to ${label(s)}`);
+}
+
+async function end(who) {
+  const s = await find(who);
+  await post(`/api/sessions/${s.id}/close`, {});
+  console.log(`ended ${label(s)}`);
+}
+
+function start(args) {
+  const opts = { base: "origin/main" };
+  const rest = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--worktree" || a === "--base" || a === "--badge") opts[a.slice(2)] = args[++i];
+    else rest.push(a);
+  }
+  const [dirArg, ...promptWords] = rest;
+  if (!dirArg || promptWords.length === 0) die("sop start <dir> [--worktree <branch>] [--badge <label>] <prompt>");
+  let dir = resolve(dirArg);
+  if (!existsSync(dir)) die(`${dir} doesn't exist`);
+  if (opts.worktree) {
+    // Flat dir names under .worktrees: sc-8121/foo-bar -> sc-8121-foo-bar.
+    const name = opts.worktree.replace(/\//g, "-").slice(0, 60);
+    const wt = join(dir, ".worktrees", name);
+    if (existsSync(wt)) die(`${wt} already exists`);
+    execFileSync("git", ["-C", dir, "fetch", "-q", "origin"], { stdio: "inherit" });
+    execFileSync("git", ["-C", dir, "worktree", "add", "-q", wt, "-b", opts.worktree, opts.base], { stdio: "inherit" });
+    dir = wt;
+  }
+  const badge = opts.badge ?? (opts.worktree ? opts.worktree.split("/")[0] : basename(dir));
+  const prompt = promptWords.join(" ");
+  // Values go in as argv and through `quoted form of`, never spliced into script source.
+  const script = `
+on run argv
+  set cmd to "cd " & quoted form of (item 1 of argv) & " && (command -v badge >/dev/null && badge " & quoted form of (item 2 of argv) & "; true) && claude " & quoted form of (item 3 of argv)
+  tell application "iTerm2"
+    tell current window
+      set t to (create tab with default profile)
+      tell current session of t to write text cmd
+    end tell
+  end tell
+end run`;
+  execFileSync("osascript", ["-e", script, dir, badge, prompt]);
+  console.log(`started a session in ${dir} (badge "${badge}")`);
+}
+
+// The operator is a Claude session with docs/operator-prompt.md appended to its system
+// prompt. OPERATOR_ROLE tells the hook, and so the server, which session it is.
+function operator(args) {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const prompt = readFileSync(join(here, "..", "docs", "operator-prompt.md"), "utf8");
+  spawnSync("sh", ["-c", "command -v badge >/dev/null && badge operator || true"], { stdio: "inherit" });
+  const r = spawnSync("claude", ["--append-system-prompt", prompt, ...args], {
+    stdio: "inherit",
+    env: { ...process.env, OPERATOR_ROLE: "operator" },
+  });
+  process.exit(r.status ?? 1);
+}
+
+const [cmd, ...args] = process.argv.slice(2);
+const commands = {
+  operator: () => operator(args),
+  ls: () => ls(),
+  feed: () => (args[0] ? feed(args[0], args[1]) : die("sop feed <who> [n]")),
+  say: () => (args[0] ? say(args[0], args.slice(1)) : die("sop say <who> <text>")),
+  end: () => (args[0] ? end(args[0]) : die("sop end <who>")),
+  start: () => start(args),
+};
+if (!commands[cmd]) {
+  console.log(USAGE);
+  process.exit(cmd ? 1 : 0);
+}
+await commands[cmd]();

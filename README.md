@@ -26,6 +26,30 @@ Env vars:
 - `OPERATOR_NOTIFY=0` - turn off macOS notifications
 - `OPERATOR_URL` / `OPERATOR_TIMEOUT_MS` - read by `bin/operator-hook` (defaults `http://127.0.0.1:4477`, `120000`)
 
+## The operator
+
+`sop operator` starts a Claude Code session whose job is running the others. It gets its
+instructions from `docs/operator-prompt.md` and drives everything through `sop`:
+
+```sh
+sop ls                                   # every session: status, card, what it needs
+sop feed sc-8121                         # a session's last messages
+sop say sc-8121 "go with option 1"       # type into a session
+sop end sc-8121                          # /exit and close its tab
+sop start ~/code/app --worktree sc-8121/foo "start sc-8121"   # worktree + tab + claude
+```
+
+Put it on your PATH (`ln -s "$PWD/bin/sop" ~/.local/bin/sop`), then run `sop operator` in
+any terminal tab. The page pins it in its own strip at the top.
+
+**Nudges.** When a session has needed you for 2 minutes (finished with a question, waiting
+on a prompt, or failing), the server types one bundled `[operator nudge]` line into the
+operator, which tells you what each one needs. Each state nudges once, at most one message
+every 2 minutes, never while the operator is mid-turn. `OPERATOR_NUDGES=0` turns them off.
+
+The operator relays; it doesn't decide. It won't answer a worker for you, approve
+anything, or tell one to merge, deploy or post anywhere.
+
 ## How it works
 
 ```

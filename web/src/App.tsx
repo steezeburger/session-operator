@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Behavior, OperatorState, PendingDecision, Ref, Session, SessionStatus } from "../../server/types.ts";
 import { MatrixRain } from "./MatrixRain.tsx";
-import { closedOutcome, focusRefs, MetaTag, RefList, refLabel, WithMentions } from "./Refs.tsx";
+import { closedOutcome, focusRefs, RefList, refLabel, WithMentions } from "./Refs.tsx";
 import { ReplyBox } from "./ReplyBox.tsx";
 import { SessionDetail } from "./SessionDetail.tsx";
 
@@ -133,7 +133,7 @@ function repoName(s: Session) {
 
 function SessionRow({ s, now, onOpen }: { s: Session; now: number; onOpen: () => void }) {
   const style = STATUS_STYLE[s.status];
-  const { own: refs, meta } = focusRefs(s);
+  const { own: refs } = focusRefs(s);
   const outcome = s.status === "closed" ? closedOutcome(s) : null;
   const next =
     outcome?.text ??
@@ -149,11 +149,6 @@ function SessionRow({ s, now, onOpen }: { s: Session; now: number; onOpen: () =>
         <span className="font-bold">{repoName(s)}</span>
         {refs.length > 0 ? (
           <span className="text-white"> {refs.map(refLabel).join(" · ")}</span>
-        ) : meta ? (
-          <>
-            {" "}
-            <MetaTag />
-          </>
         ) : (
           s.branch && <span className="text-code-dim"> {s.branch}</span>
         )}
@@ -166,6 +161,28 @@ function SessionRow({ s, now, onOpen }: { s: Session; now: number; onOpen: () =>
         title={next}
       >
         {next}
+      </div>
+      <div className="px-1.5 py-0.5 text-right text-code-dim">{ago(s.lastActivity, now)}</div>
+    </button>
+  );
+}
+
+// The operator is always just the operator: no card, title or next step borrowed from the
+// sessions it talks about. Only whether it's busy.
+function OperatorRow({ s, now, onOpen }: { s: Session; now: number; onOpen: () => void }) {
+  const busy = s.status === "working";
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="grid w-full cursor-pointer grid-cols-[5.5rem_1fr_2.5rem] items-stretch text-left text-xs leading-tight hover:bg-code-dark/50"
+    >
+      <div className={`px-1.5 py-0.5 font-bold ${busy ? STATUS_STYLE.working.block : STATUS_STYLE.idle.block}`}>
+        {busy ? "WORKING" : "READY"}
+      </div>
+      <div className="min-w-0 truncate px-1.5 py-0.5">
+        <span className="font-bold">operator</span>
+        <span className="text-code-dim"> {s.cwd.replace(/^\/Users\/[^/]+/, "~")}</span>
       </div>
       <div className="px-1.5 py-0.5 text-right text-code-dim">{ago(s.lastActivity, now)}</div>
     </button>
@@ -218,12 +235,6 @@ function NeedsYouCard({
           <span className="min-w-0 truncate" title={s.cwd}>
             <span className="font-bold">{repoName(s)}</span>
             {s.branch && <span className="text-code-dim"> {s.branch}</span>}
-            {focus.meta && (
-              <>
-                {" "}
-                <MetaTag />
-              </>
-            )}
             {s.title && <span className="text-code-dim"> · {s.title}</span>}
           </span>
           <span className="shrink-0 text-code-dim">{ago(s.lastActivity, now)} ago</span>
@@ -284,11 +295,14 @@ export function App() {
     void refresh();
   };
 
-  const sessions = state?.sessions ?? [];
+  const all = state?.sessions ?? [];
+  // The running operator gets its own strip; the rest are the sessions it runs.
+  const operators = all.filter((s) => s.role === "operator" && s.live);
+  const sessions = all.filter((s) => !operators.includes(s));
   const idle = sessions.filter((s) => s.status === "idle");
   const closed = sessions.filter((s) => s.status === "closed");
   const pending = state?.pending ?? [];
-  const openSession = sessions.find((s) => s.id === openId);
+  const openSession = all.find((s) => s.id === openId);
   const pendingBySession = new Map(pending.map((p) => [p.sessionId, p]));
   const groups = GROUPS.map((g) => ({ ...g, rows: sessions.filter((s) => g.statuses.includes(s.status)) }));
   const nothingActive = state && pending.length === 0 && groups.every((g) => g.rows.length === 0);
@@ -304,6 +318,17 @@ export function App() {
           <span className="text-xs text-code-dim">{sessions.length} signals in the matrix</span>
         )}
       </header>
+
+      {operators.length > 0 && (
+        <section className="mt-6">
+          <GroupHeader title="Operator" count={operators.length} color="bg-white" />
+          <div className={`${BORDER} glow divide-y divide-code-dark bg-black/85`}>
+            {operators.map((s) => (
+              <OperatorRow key={s.id} s={s} now={now} onOpen={() => setOpenId(s.id)} />
+            ))}
+          </div>
+        </section>
+      )}
 
       {pending.length > 0 && (
         <section className="mt-6">

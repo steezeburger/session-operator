@@ -173,6 +173,7 @@ export function parseTranscript(id: string, text: string, mtime: Date): Session 
     refs: [],
     status,
     statusDetail,
+    role: null,
     turnEnd: apiError || (lastTurn.type === "user" && hasToolError(lastTurn)) ? "failing" : turnEnded ? "finished" : "mid-turn",
     lastActivity: lastActivity.toISOString(),
   };
@@ -216,7 +217,7 @@ export async function scanSessions(): Promise<Session[]> {
 }
 
 const FEED_LIMIT = 40;
-const FEED_TEXT_MAX = 2000;
+const FEED_TEXT_MAX = 4000;
 const SESSION_ID_RE = /^[0-9a-f-]{36}$/;
 
 function toolLine(block: { name?: string; input?: Record<string, unknown> }): string {
@@ -225,8 +226,11 @@ function toolLine(block: { name?: string; input?: Record<string, unknown> }): st
   return `${block.name ?? "tool"}${pick ? `: ${pick}` : ""}`;
 }
 
+// Long messages lose their middle: the opening says what it's about, the end holds the ask.
 function clipFeed(text: string): string {
-  return text.length > FEED_TEXT_MAX ? `${text.slice(0, FEED_TEXT_MAX - 1)}…` : text;
+  if (text.length <= FEED_TEXT_MAX) return text;
+  const head = Math.floor(FEED_TEXT_MAX * 0.3);
+  return `${text.slice(0, head)}\n…\n${text.slice(text.length - (FEED_TEXT_MAX - head - 3))}`;
 }
 
 // Recent conversation for the detail panel. Same rule as the scan: read fields, never act on them.

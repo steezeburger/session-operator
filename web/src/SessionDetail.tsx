@@ -1,6 +1,6 @@
 import { type CSSProperties, type PointerEvent as ReactPointerEvent, useEffect, useRef, useState } from "react";
 import type { FeedItem, Session } from "../../server/types.ts";
-import { closedOutcome, focusRefs, MetaTag, RefList } from "./Refs.tsx";
+import { closedOutcome, focusRefs, RefList } from "./Refs.tsx";
 import { imageFiles, ReplyBox } from "./ReplyBox.tsx";
 
 const KIND_STYLE: Record<FeedItem["kind"], { label: string; cls: string }> = {
@@ -167,7 +167,7 @@ export function SessionDetail({ session, onClose }: { session: Session; onClose:
             {focus.mentioned.length > 0 && (
               <details className="my-1 text-code-dim">
                 <summary className="cursor-pointer">
-                  {focus.meta && <MetaTag />} mentioned {focus.mentioned.length}
+                  mentioned {focus.mentioned.length}
                 </summary>
                 <RefList refs={focus.mentioned} className="mt-1 opacity-70" />
               </details>
