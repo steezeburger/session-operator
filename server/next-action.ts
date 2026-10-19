@@ -12,6 +12,8 @@ export interface NextAction {
   url: string | null;
   say: string | null;
   blockedOn: string | null;
+  /** The message asks the user to do, answer or decide something. */
+  needsUser: boolean;
 }
 
 const SCHEMA = JSON.stringify({
@@ -21,8 +23,9 @@ const SCHEMA = JSON.stringify({
     url: { type: ["string", "null"] },
     say: { type: ["string", "null"] },
     blockedOn: { type: ["string", "null"] },
+    needsUser: { type: "boolean" },
   },
-  required: ["action", "url", "say", "blockedOn"],
+  required: ["action", "url", "say", "blockedOn", "needsUser"],
   additionalProperties: false,
 });
 
@@ -30,6 +33,7 @@ const PROMPT = `Below is the last message a coding agent sent its user. Say the 
 url: the link the user should open for this step, chosen ONLY from the candidate links below, else null.
 say: exact text the user should type back to the agent, if the message asks for specific text, else null.
 blockedOn: if nothing can usefully happen until something outside the user finishes (a CI run, a deploy, a code review, a migration, a scheduled job), name it in a few words, e.g. "prod deploy of #5801", "CI on PR #5798". Null if the user can act right now, and null when the agent itself is still doing the work (fixing, editing, running tests) - only things outside both of them count.
+needsUser: true if the message asks the user to do, test, run, answer or decide anything, false if nothing is asked of them.
 
 Candidate links:
 {links}
@@ -103,6 +107,7 @@ async function infer(text: string, cwd: string): Promise<NextAction | null> {
     url: out.url && links.includes(out.url) ? out.url : null,
     say: out.say || null,
     blockedOn: out.blockedOn || null,
+    needsUser: out.needsUser === true,
   };
 }
 
