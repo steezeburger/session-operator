@@ -66,8 +66,10 @@ export function ReplyBox({
   say,
   autoFocus,
   images: lifted,
+  placeholder = "reply to claude (shift+enter for a new line, drop or paste images)",
 }: {
   sessionId: string;
+  placeholder?: string;
   say?: string | null;
   autoFocus?: boolean;
   images?: Images;
@@ -160,7 +162,7 @@ export function ReplyBox({
               }
             }}
             rows={Math.min(8, text.split("\n").length)}
-            placeholder="reply to claude (shift+enter for a new line, drop or paste images)"
+            placeholder={placeholder}
             autoFocus={autoFocus}
             className="min-w-0 flex-1 resize-none bg-transparent px-2 py-1 text-sm text-white caret-code outline-none placeholder:text-code-dark"
           />

@@ -46,12 +46,13 @@ const hookStatus = new Map<string, HookStatus>();
 const lastAsk = new Map<string, string>();
 const QUESTIONS_DETAIL = "Has questions for you";
 
-// Sessions started with `sop operator`. Kept on disk so a server restart doesn't forget them.
+// The one session started with `sop operator`. Kept on disk so a server restart doesn't forget
+// it, and so `sop operator` can resume the same session next time. A newer one replaces it.
 const ROLES_FILE = join(tmpdir(), "session-operator-roles.json");
 const operatorIds = new Set<string>(
   (() => {
     try {
-      return JSON.parse(readFileSync(ROLES_FILE, "utf8")) as string[];
+      return (JSON.parse(readFileSync(ROLES_FILE, "utf8")) as string[]).slice(-1);
     } catch {
       return [];
     }
@@ -59,6 +60,7 @@ const operatorIds = new Set<string>(
 );
 function markOperator(sessionId: string) {
   if (operatorIds.has(sessionId)) return;
+  operatorIds.clear();
   operatorIds.add(sessionId);
   void writeFile(ROLES_FILE, JSON.stringify([...operatorIds])).catch(() => {});
 }
