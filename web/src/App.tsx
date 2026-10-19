@@ -5,7 +5,7 @@ import { closedOutcome, focusRefs, RefList, refLabel, WithMentions } from "./Ref
 import { ReplyBox } from "./ReplyBox.tsx";
 import { SessionDetail } from "./SessionDetail.tsx";
 
-// Six meanings only: amber = needs Jesse, red = failing, cyan = waiting on the world (CI, deploy),
+// Six meanings only: amber = needs the user, red = failing, cyan = waiting on the world (CI, deploy),
 // bright green = running, dark green = idle, outline = closed.
 const NEEDS_YOU = "bg-needs text-black [text-shadow:none] pulse";
 const STATUS_STYLE: Record<SessionStatus, { label: string; block: string; next: string }> = {
@@ -189,7 +189,7 @@ function OperatorRow({ s, now, onOpen }: { s: Session; now: number; onOpen: () =
   );
 }
 
-// One imperative line per "needs you" session: what Jesse does next, not what Claude did.
+// One imperative line per "needs you" session: what the user does next, not what Claude did.
 function nextStep(s: Session, pending: PendingDecision | undefined): string {
   if (pending) return `Approve or deny ${pending.toolName} above: ${pending.summary}`;
   if (s.status === "waiting") return `In its terminal: ${s.statusDetail}`;
@@ -365,7 +365,7 @@ export function App() {
         ))}
 
       {nothingActive && (
-        <p className={`${BORDER} mt-6 border-dashed bg-black/85 p-3 text-center text-sm`}>wake up, jesse... nothing is running</p>
+        <p className={`${BORDER} mt-6 border-dashed bg-black/85 p-3 text-center text-sm`}>wake up... nothing is running</p>
       )}
 
       {idle.length > 0 && (

@@ -46,7 +46,7 @@ export function closedOutcome(s: Session): { text: string; cls: string } {
 
 
 export function refLabel(r: Ref) {
-  return r.kind === "card" ? `sc-${r.id}` : `PR #${r.id}`;
+  return r.label;
 }
 
 /** One line per card/PR: number, state, title. Links out without opening the session. */
@@ -55,7 +55,7 @@ export function RefList({ refs, className = "" }: { refs: Ref[]; className?: str
   return (
     <ul className={`space-y-0.5 text-xs ${className}`}>
       {refs.map((r) => (
-        <li key={`${r.kind}${r.id}`} className="flex min-w-0 items-baseline gap-2">
+        <li key={`${r.tracker}:${r.id}`} className="flex min-w-0 items-baseline gap-2">
           <a
             href={r.url}
             target="_blank"
@@ -75,7 +75,7 @@ export function RefList({ refs, className = "" }: { refs: Ref[]; className?: str
   );
 }
 
-// PR/card mentions inside Claude's text, matched to a known ref so hovering shows its title.
+// Card/issue/PR mentions inside Claude's text, matched to a known ref so hovering shows its title.
 const MENTION_RE = /(\bsc-\d{2,6}\b|\bPR\s*#?\d{3,6}\b|(?<![\w/])#\d{3,6}\b)/gi;
 
 export function WithMentions({ text, refs }: { text: string; refs: Ref[] }) {
@@ -84,8 +84,8 @@ export function WithMentions({ text, refs }: { text: string; refs: Ref[] }) {
     <>
       {text.split(MENTION_RE).map((part, i) => {
         const n = Number(part.match(/\d+$/)?.[0]);
-        const kind = /^sc-/i.test(part) ? "card" : "pr";
-        const ref = i % 2 === 1 ? refs.find((r) => r.kind === kind && r.id === n) : undefined;
+        const tracker = /^sc-/i.test(part) ? "shortcut" : "github";
+        const ref = i % 2 === 1 ? refs.find((r) => r.tracker === tracker && r.id === n) : undefined;
         return ref ? (
           <abbr key={i} title={ref.title} className="cursor-help no-underline decoration-dotted underline-offset-4 [text-decoration-line:underline]">
             {part}

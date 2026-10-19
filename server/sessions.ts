@@ -53,7 +53,7 @@ function clip(text: string | undefined, max = 160): string | null {
   return oneLine.length > max ? `${oneLine.slice(0, max - 1)}…` : oneLine;
 }
 
-// Keep the end: a question or ask for Jesse usually comes last.
+// Keep the end: a question or ask for the user usually comes last.
 function clipTail(text: string | undefined, max = 280): string | null {
   if (!text) return null;
   const oneLine = text.replace(/\s+/g, " ").trim();
@@ -72,7 +72,7 @@ function assistantText(r: TranscriptRecord): string | undefined {
 }
 
 // Claude's replies end with "Next: <one action>"; that line is the step. Failing that,
-// the last question it asked is what Jesse has to answer.
+// the last question it asked is what the user has to answer.
 export function extractNextAction(text: string | undefined): string | null {
   if (!text) return null;
   const next = [...text.matchAll(/(?:^|\n|\. )\**Next:?\**:?\s*([^\n]+(?:\n(?!\n)[^\n]+)*)/gi)].pop()?.[1];

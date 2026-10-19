@@ -46,7 +46,7 @@ const post = (path, body) =>
 
 function label(s) {
   const card = s.refs.find((r) => r.source === "own" && r.kind === "card");
-  if (card) return `sc-${card.id}`;
+  if (card) return card.label;
   return s.branch && s.branch !== "main" ? `${s.project} (${s.branch})` : s.project;
 }
 
@@ -64,7 +64,7 @@ async function find(who) {
       s.id.startsWith(w) ||
       (w === "operator" && s.role === "operator") ||
       label(s).toLowerCase() === w ||
-      s.refs.some((r) => r.source === "own" && `sc-${r.id}` === w) ||
+      s.refs.some((r) => r.source === "own" && r.label.toLowerCase() === w) ||
       s.project.toLowerCase() === w ||
       (s.branch ?? "").toLowerCase().includes(w),
   );

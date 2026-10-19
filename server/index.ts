@@ -220,8 +220,8 @@ async function buildState(): Promise<OperatorState> {
   return { pending: pendingList, sessions };
 }
 
-// Nudges: when a worker has needed Jesse for a while, the operator session hears about it.
-// Each state nudges once, only after it has lasted NUDGE_DELAY_MS (so a tab he's already
+// Nudges: when a worker has needed you for a while, the operator session hears about it.
+// Each state nudges once, only after it has lasted NUDGE_DELAY_MS (so a tab you're already
 // answering stays quiet), at most one bundled message per NUDGE_GAP_MS, and never while
 // the operator is mid-turn. OPERATOR_NUDGES=0 turns them off.
 const NUDGE_DELAY_MS = 2 * 60 * 1000;
@@ -234,7 +234,7 @@ let lastNudgeAt = 0;
 
 function sessionLabel(s: Session): string {
   const card = s.refs.find((r) => r.source === "own" && r.kind === "card");
-  return card ? `sc-${card.id}` : s.branch && s.branch !== "main" ? `${s.project} (${s.branch})` : s.project;
+  return card ? card.label : s.branch && s.branch !== "main" ? `${s.project} (${s.branch})` : s.project;
 }
 
 async function nudgeTick() {

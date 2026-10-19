@@ -1,34 +1,139 @@
 import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { promisify } from "node:util";
 import type { Ref } from "./types.ts";
 
 const run = promisify(execFile);
 
-// Shortcut token: env first, else the aero repo's gitignored .mcp.json. Read-only GETs, never logged.
-const MCP_JSON = process.env.OPERATOR_SHORTCUT_MCP_JSON ?? join(homedir(), "code", "tailwind", "aero", ".mcp.json");
-const SHORTCUT_API = "https://api.app.shortcut.com/api/v3";
-const CARD_TTL_MS = 10 * 60 * 1000;
-const PR_TTL_MS = 2 * 60 * 1000;
 const MISS_TTL_MS = 60 * 1000;
 
-const CARD_RE = /\bsc-(\d{2,6})\b/gi;
-const PR_RE = /(?:\bPR\s*#?|\bpull\/|(?<![\w/])#)(\d{3,6})\b/gi;
-
-/** Tallies card and PR mentions in one message into counts keyed "card:N" / "pr:N". */
-export function countMentions(text: string, counts: Map<string, number>) {
-  for (const m of text.matchAll(CARD_RE)) counts.set(`card:${m[1]}`, (counts.get(`card:${m[1]}`) ?? 0) + 1);
-  for (const m of text.matchAll(PR_RE)) counts.set(`pr:${m[1]}`, (counts.get(`pr:${m[1]}`) ?? 0) + 1);
+/**
+ * One issue tracker. Each one finds its ids in Claude's text (and maybe the branch name) and
+ * looks them up. Mention counts are keyed "<tracker>:<id>".
+ */
+interface Tracker {
+  name: Ref["tracker"];
+  /** Matches an id in free text; group 1 is the number. */
+  mention: RegExp;
+  /** Ids the branch name says the session is about. */
+  fromBranch(branch: string): number[];
+  ttl: number;
+  /** Cache key for one id, or null when this session can't look it up (no GitHub repo). */
+  key(id: number, repo: string | null): string | null;
+  load(id: number, repo: string | null): Promise<Ref | null>;
 }
 
-function top(counts: Map<string, number>, kind: "card" | "pr", n: number): number[] {
+// Shortcut: SHORTCUT_API_TOKEN only. Read-only GETs, never logged.
+const SHORTCUT_API = "https://api.app.shortcut.com/api/v3";
+const CARD_RE = /\bsc-(\d{2,6})\b/gi;
+
+// Workflow state id -> name ("Build", "Test", "Released"), fetched once.
+let statesPromise: Promise<Map<number, string>> | null = null;
+function workflowStates(token: string): Promise<Map<number, string>> {
+  statesPromise ??= fetch(`${SHORTCUT_API}/workflows`, { headers: { "Shortcut-Token": token } })
+    .then(async (res) => {
+      const flows = (await res.json()) as { states?: { id: number; name: string }[] }[];
+      return new Map(flows.flatMap((f) => f.states ?? []).map((st) => [st.id, st.name]));
+    })
+    .catch(() => {
+      statesPromise = null;
+      return new Map();
+    });
+  return statesPromise;
+}
+
+const shortcut: Tracker = {
+  name: "shortcut",
+  mention: CARD_RE,
+  fromBranch: (branch) => [...branch.matchAll(CARD_RE)].map((m) => Number(m[1])),
+  ttl: 10 * 60 * 1000,
+  key: (id) => (process.env.SHORTCUT_API_TOKEN ? String(id) : null),
+  async load(id) {
+    const token = process.env.SHORTCUT_API_TOKEN;
+    if (!token) return null;
+    const res = await fetch(`${SHORTCUT_API}/stories/${id}`, { headers: { "Shortcut-Token": token } });
+    if (!res.ok) return null;
+    const s = (await res.json()) as {
+      name?: string;
+      app_url?: string;
+      completed?: boolean;
+      started?: boolean;
+      workflow_state_id?: number;
+    };
+    if (!s.name || !s.app_url) return null;
+    const stateName = s.workflow_state_id ? (await workflowStates(token)).get(s.workflow_state_id) : undefined;
+    return {
+      tracker: "shortcut",
+      kind: "card",
+      label: `sc-${id}`,
+      source: "own",
+      mentions: 0,
+      id,
+      title: s.name,
+      url: s.app_url,
+      state: stateName?.toLowerCase() ?? (s.completed ? "done" : s.started ? "started" : "unstarted"),
+    };
+  },
+};
+
+// GitHub: issues and PRs share one number space, and the issues endpoint returns both.
+const GH_RE = /(?:\bPR\s*#?|\bpull\/|\bissues\/|(?<![\w/])#)(\d{3,6})\b/gi;
+
+interface GhIssue {
+  number: number;
+  title: string;
+  html_url: string;
+  state: string;
+  draft?: boolean;
+  pull_request?: { merged_at: string | null };
+}
+
+function githubRef(i: GhIssue): Ref {
+  const pr = !!i.pull_request;
+  const state = pr && i.pull_request?.merged_at ? "merged" : pr && i.draft && i.state === "open" ? "draft" : i.state;
+  return {
+    tracker: "github",
+    kind: pr ? "pr" : "issue",
+    label: pr ? `PR #${i.number}` : `#${i.number}`,
+    source: "own",
+    mentions: 0,
+    id: i.number,
+    title: i.title,
+    url: i.html_url,
+    state,
+  };
+}
+
+const github: Tracker = {
+  name: "github",
+  mention: GH_RE,
+  fromBranch: () => [],
+  ttl: 2 * 60 * 1000,
+  key: (id, repo) => (repo ? `${repo}#${id}` : null),
+  async load(id, repo) {
+    if (!repo) return null;
+    const { stdout } = await run("gh", ["api", `repos/${repo}/issues/${id}`], { timeout: 15_000 });
+    return githubRef(JSON.parse(stdout) as GhIssue);
+  },
+};
+
+const TRACKERS = [shortcut, github];
+
+/** Tallies tracker mentions in one message into counts keyed "<tracker>:<id>". */
+export function countMentions(text: string, counts: Map<string, number>) {
+  for (const t of TRACKERS) {
+    for (const m of text.matchAll(t.mention)) {
+      const k = `${t.name}:${m[1]}`;
+      counts.set(k, (counts.get(k) ?? 0) + 1);
+    }
+  }
+}
+
+function top(counts: Map<string, number>, tracker: Ref["tracker"], n: number): number[] {
   return [...counts]
-    .filter(([k]) => k.startsWith(`${kind}:`))
+    .filter(([k]) => k.startsWith(`${tracker}:`))
     .sort((a, b) => b[1] - a[1])
     .slice(0, n)
-    .map(([k]) => Number(k.slice(kind.length + 1)));
+    .map(([k]) => Number(k.slice(tracker.length + 1)));
 }
 
 interface Cached<T> {
@@ -37,27 +142,9 @@ interface Cached<T> {
   ttl: number;
 }
 
-const cards = new Map<number, Cached<Ref>>();
-const prs = new Map<string, Cached<Ref>>();
-const branchPrs = new Map<string, Cached<Ref>>();
+const cache = new Map<string, Cached<Ref>>();
 const repos = new Map<string, string | null>();
 const inflight = new Set<string>();
-
-let tokenPromise: Promise<string | null> | null = null;
-function shortcutToken(): Promise<string | null> {
-  tokenPromise ??= (async () => {
-    if (process.env.SHORTCUT_API_TOKEN) return process.env.SHORTCUT_API_TOKEN;
-    try {
-      const cfg = JSON.parse(await readFile(MCP_JSON, "utf8")) as {
-        mcpServers?: { shortcut?: { env?: { SHORTCUT_API_TOKEN?: string } } };
-      };
-      return cfg.mcpServers?.shortcut?.env?.SHORTCUT_API_TOKEN ?? null;
-    } catch {
-      return null;
-    }
-  })();
-  return tokenPromise;
-}
 
 async function githubRepo(cwd: string): Promise<string | null> {
   if (repos.has(cwd)) return repos.get(cwd) ?? null;
@@ -77,90 +164,28 @@ function fresh<T>(c: Cached<T> | undefined): c is Cached<T> {
 }
 
 // Fire-and-forget fill; the next state build picks the result up.
-function fill<K>(map: Map<K, Cached<Ref>>, key: K, ttl: number, load: () => Promise<Ref | null>, onReady: () => void) {
-  const flight = `${String(key)}`;
-  if (fresh(map.get(key)) || inflight.has(flight)) return;
-  inflight.add(flight);
+function fill(key: string, ttl: number, load: () => Promise<Ref | null>, onReady: () => void) {
+  if (fresh(cache.get(key)) || inflight.has(key)) return;
+  inflight.add(key);
   load()
     .catch(() => null)
     .then((value) => {
-      map.set(key, { at: Date.now(), value, ttl: value ? ttl : MISS_TTL_MS });
-      inflight.delete(flight);
+      cache.set(key, { at: Date.now(), value, ttl: value ? ttl : MISS_TTL_MS });
+      inflight.delete(key);
       onReady();
     });
 }
 
-// Workflow state id -> name ("Build", "Test", "Released"), fetched once.
-let statesPromise: Promise<Map<number, string>> | null = null;
-function workflowStates(token: string): Promise<Map<number, string>> {
-  statesPromise ??= fetch(`${SHORTCUT_API}/workflows`, { headers: { "Shortcut-Token": token } })
-    .then(async (res) => {
-      const flows = (await res.json()) as { states?: { id: number; name: string }[] }[];
-      return new Map(flows.flatMap((f) => f.states ?? []).map((st) => [st.id, st.name]));
-    })
-    .catch(() => {
-      statesPromise = null;
-      return new Map();
-    });
-  return statesPromise;
-}
-
-async function loadCard(id: number): Promise<Ref | null> {
-  const token = await shortcutToken();
-  if (!token) return null;
-  const res = await fetch(`${SHORTCUT_API}/stories/${id}`, { headers: { "Shortcut-Token": token } });
-  if (!res.ok) return null;
-  const s = (await res.json()) as {
-    name?: string;
-    app_url?: string;
-    completed?: boolean;
-    started?: boolean;
-    workflow_state_id?: number;
-  };
-  if (!s.name) return null;
-  const stateName = s.workflow_state_id ? (await workflowStates(token)).get(s.workflow_state_id) : undefined;
-  return {
-    kind: "card",
-    source: "own",
-    mentions: 0,
-    id,
-    title: s.name,
-    url: s.app_url ?? `https://app.shortcut.com/tailwnd/story/${id}`,
-    state: stateName?.toLowerCase() ?? (s.completed ? "done" : s.started ? "started" : "unstarted"),
-  };
-}
-
-interface GhPr {
-  number: number;
-  title: string;
-  url: string;
-  state: string;
-  isDraft?: boolean;
-}
-
-function prRef(p: GhPr): Ref {
-  return { kind: "pr", source: "own", mentions: 0, id: p.number, title: p.title, url: p.url, state: p.isDraft && p.state === "OPEN" ? "draft" : p.state.toLowerCase() };
-}
-
-async function loadPr(repo: string, n: number): Promise<Ref | null> {
-  const { stdout } = await run("gh", ["pr", "view", String(n), "-R", repo, "--json", "number,title,url,state,isDraft"], {
+async function loadBranchPr(repo: string, branch: string): Promise<Ref | null> {
+  const { stdout } = await run("gh", ["pr", "list", "-R", repo, "--head", branch, "--state", "all", "--limit", "1", "--json", "number"], {
     timeout: 15_000,
   });
-  return prRef(JSON.parse(stdout) as GhPr);
-}
-
-async function loadBranchPr(repo: string, branch: string): Promise<Ref | null> {
-  const { stdout } = await run(
-    "gh",
-    ["pr", "list", "-R", repo, "--head", branch, "--state", "all", "--limit", "1", "--json", "number,title,url,state,isDraft"],
-    { timeout: 15_000 },
-  );
-  const [p] = JSON.parse(stdout) as GhPr[];
-  return p ? prRef(p) : null;
+  const [p] = JSON.parse(stdout) as { number: number }[];
+  return p ? github.load(p.number, repo) : null;
 }
 
 /**
- * Cards and PRs a session is about: the branch's card and PR first, then the ones Claude
+ * Cards, issues and PRs a session is about: the branch's own first, then the ones Claude
  * named most. Lookups run in the background; returns what's cached now.
  */
 export async function refsFor(
@@ -170,32 +195,29 @@ export async function refsFor(
   onReady: () => void,
 ): Promise<Ref[]> {
   const repo = await githubRepo(cwd);
-  const ownCards = new Set([...(branch ?? "").matchAll(CARD_RE)].map((m) => Number(m[1])));
-  const cardIds = new Set<number>([...ownCards, ...top(counts, "card", 4)]);
-  const prIds = repo ? top(counts, "pr", 4) : [];
-
   const out: Ref[] = [];
   const seen = new Set<string>();
   const add = (r: Ref | null | undefined, source: Ref["source"]) => {
-    if (!r || seen.has(`${r.kind}${r.id}`)) return;
-    seen.add(`${r.kind}${r.id}`);
-    out.push({ ...r, source, mentions: counts.get(`${r.kind}:${r.id}`) ?? 0 });
+    const k = r && `${r.tracker}:${r.id}`;
+    if (!r || !k || seen.has(k)) return;
+    seen.add(k);
+    out.push({ ...r, source, mentions: counts.get(k) ?? 0 });
   };
 
-  for (const id of [...cardIds].slice(0, 4)) {
-    fill(cards, id, CARD_TTL_MS, () => loadCard(id), onReady);
-    add(cards.get(id)?.value, ownCards.has(id) ? "own" : "mention");
-  }
+  // The branch's PR is looked up by head ref, not by a number in its name.
   if (repo && branch && branch !== "main" && branch !== "master" && branch !== "HEAD") {
-    const key = `${repo}#${branch}`;
-    fill(branchPrs, key, PR_TTL_MS, () => loadBranchPr(repo, branch), onReady);
-    add(branchPrs.get(key)?.value, "own");
+    const key = `branch:${repo}#${branch}`;
+    fill(key, github.ttl, () => loadBranchPr(repo, branch), onReady);
+    add(cache.get(key)?.value, "own");
   }
-  if (repo) {
-    for (const n of prIds) {
-      const key = `${repo}#${n}`;
-      fill(prs, key, PR_TTL_MS, () => loadPr(repo, n), onReady);
-      add(prs.get(key)?.value, "mention");
+  for (const t of TRACKERS) {
+    const own = new Set(t.fromBranch(branch ?? ""));
+    for (const id of new Set([...own, ...top(counts, t.name, 4)])) {
+      const key = t.key(id, repo);
+      if (!key) continue;
+      const k = `${t.name}:${key}`;
+      fill(k, t.ttl, () => t.load(id, repo), onReady);
+      add(cache.get(k)?.value, own.has(id) ? "own" : "mention");
     }
   }
   // The session's own card and PR lead; mentions follow.

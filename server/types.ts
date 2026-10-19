@@ -9,17 +9,17 @@ export interface Session {
   lastPrompt: string | null;
   /** Tail of Claude's last message, where the question or ask usually sits. */
   lastReply: string | null;
-  /** The concrete step Claude asked Jesse to take, pulled from its last message. */
+  /** The concrete step Claude asked the user to take, pulled from its last message. */
   nextAction: string | null;
   /** Link to open for the next action (only links found in the message or built from its PR numbers). */
   nextUrl: string | null;
-  /** Exact text Claude asked Jesse to type back. */
+  /** Exact text Claude asked the user to type back. */
   nextSay: string | null;
   /** True while the next action is still being worked out. */
   nextLoading: boolean;
   /** A Claude process for this session is running, so the operator can type a reply into it. */
   live: boolean;
-  /** What the session is waiting on outside Jesse (CI, a deploy, a review), when status is "blocked". */
+  /** What the session is waiting on outside the user (CI, a deploy, a review), when status is "blocked". */
   blockedOn: string | null;
   /** Shortcut cards and PRs this session is about, with their titles. */
   refs: Ref[];
@@ -33,11 +33,14 @@ export interface Session {
 }
 
 export interface Ref {
-  kind: "card" | "pr";
+  tracker: "shortcut" | "github";
+  kind: "card" | "issue" | "pr";
   id: number;
+  /** How it's written in text: sc-123, #123, PR #123. */
+  label: string;
   title: string;
   url: string;
-  /** card: its Shortcut workflow state, lowercased (build, test, released). pr: open | draft | merged | closed. */
+  /** card: its Shortcut workflow state, lowercased (build, test, released). issue: open | closed. pr: open | draft | merged | closed. */
   state: string;
   /** "own": the session's branch card/PR. "mention": named in its messages. */
   source: "own" | "mention";
