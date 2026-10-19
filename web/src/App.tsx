@@ -259,21 +259,28 @@ function SessionRow({ s, now, onOpen }: { s: Session; now: number; onOpen: () =>
 }
 
 // The operator is always just the operator: no card, title or next step borrowed from the
-// sessions it talks about. Only whether it's busy.
+// sessions it talks about. Only whether it's busy, or waiting on you (a question or permission).
 function OperatorRow({ s, now, onOpen }: { s: Session; now: number; onOpen: () => void }) {
   const busy = s.status === "working";
+  const waiting = s.status === "waiting";
   return (
     <button
       type="button"
       onClick={onOpen}
       className="grid w-full cursor-pointer grid-cols-[5.5rem_1fr_2.5rem] items-stretch text-left text-xs leading-tight hover:bg-code-dark/50"
     >
-      <div className={`px-1.5 py-0.5 font-bold ${busy ? STATUS_STYLE.working.block : STATUS_STYLE.idle.block}`}>
-        {busy ? "WORKING" : "READY"}
+      <div
+        className={`px-1.5 py-0.5 font-bold ${waiting ? STATUS_STYLE.waiting.block : busy ? STATUS_STYLE.working.block : STATUS_STYLE.idle.block}`}
+      >
+        {waiting ? STATUS_STYLE.waiting.label : busy ? "WORKING" : "READY"}
       </div>
       <div className="min-w-0 truncate px-1.5 py-0.5">
         <span className="font-bold">operator</span>
-        <span className="text-code-dim"> {s.cwd.replace(/^\/Users\/[^/]+/, "~")}</span>
+        {waiting ? (
+          <span className="font-bold uppercase text-needs"> {s.statusDetail}</span>
+        ) : (
+          <span className="text-code-dim"> {s.cwd.replace(/^\/Users\/[^/]+/, "~")}</span>
+        )}
       </div>
       <div className="px-1.5 py-0.5 text-right text-code-dim">{ago(s.lastActivity, now)}</div>
     </button>
