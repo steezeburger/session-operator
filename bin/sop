@@ -4,6 +4,7 @@
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -11,7 +12,7 @@ const BASE = process.env.OPERATOR_URL ?? "http://127.0.0.1:4477";
 
 const USAGE = `sop - session operator
 
-  sop operator [claude args...]   start the operator session in this terminal
+  sop operator [claude args...]   resume the operator session in this terminal (--new for a fresh one)
 
   sop ls                          every session: who, status, what it needs
   sop feed <who> [n]              a session's last n messages (default 12)
@@ -147,8 +148,23 @@ end run`;
 }
 
 // The operator is a Claude session with docs/operator-prompt.md appended to its system
-// prompt. OPERATOR_ROLE tells the hook, and so the server, which session it is.
-function operator(args) {
+// prompt. OPERATOR_ROLE tells the hook, and so the server, which session it is. It's always
+// the same session: the server remembers the last one, and this resumes it.
+async function operator(args) {
+  const fresh = args.includes("--new");
+  args = args.filter((a) => a !== "--new");
+  let last = null;
+  try {
+    last = JSON.parse(readFileSync(join(tmpdir(), "session-operator-roles.json"), "utf8")).at(-1) ?? null;
+  } catch {}
+  if (last && !fresh && !args.some((a) => a.startsWith("--resume") || a === "-r" || a === "--continue" || a === "-c")) {
+    const running = await fetch(`${BASE}/api/state`)
+      .then((r) => r.json())
+      .then((d) => d.sessions.some((s) => s.id === last && s.live))
+      .catch(() => false);
+    if (running) die(`the operator (${last.slice(0, 8)}) is already running in another tab`);
+    args = ["--resume", last, ...args];
+  }
   const here = dirname(fileURLToPath(import.meta.url));
   const prompt = readFileSync(join(here, "..", "docs", "operator-prompt.md"), "utf8");
   spawnSync("sh", ["-c", "command -v badge >/dev/null && badge operator || true"], { stdio: "inherit" });

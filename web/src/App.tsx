@@ -259,31 +259,81 @@ function SessionRow({ s, now, onOpen }: { s: Session; now: number; onOpen: () =>
 }
 
 // The operator is always just the operator: no card, title or next step borrowed from the
-// sessions it talks about. Only whether it's busy, or waiting on you (a question or permission).
-function OperatorRow({ s, now, onOpen }: { s: Session; now: number; onOpen: () => void }) {
+// sessions it talks about. White is its color and nobody else's. Pinned, so it's one glance
+// and one keystroke away however far down the list you are.
+function OperatorConsole({
+  s,
+  now,
+  pending,
+  tally,
+  onOpen,
+  onDecide,
+}: {
+  s: Session;
+  now: number;
+  pending: PendingDecision[];
+  tally: { title: string; count: number; color: string }[];
+  onOpen: () => void;
+  onDecide: (id: string, b: Behavior, answers?: Record<string, string>) => void;
+}) {
+  const waiting = s.status === "waiting" || pending.length > 0;
   const busy = s.status === "working";
-  const waiting = s.status === "waiting";
+  const style = waiting ? STATUS_STYLE.waiting : busy ? STATUS_STYLE.working : null;
+  // What it's doing now, or what it last said to you.
+  const line = pending.length > 0
+    ? null
+    : waiting
+      ? s.statusDetail
+      : busy
+        ? s.lastPrompt && `on: ${s.lastPrompt}`
+        : s.lastReply;
   return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="grid w-full cursor-pointer grid-cols-[5.5rem_1fr_2.5rem] items-stretch text-left text-xs leading-tight hover:bg-code-dark/50"
-    >
-      <div
-        className={`px-1.5 py-0.5 font-bold ${waiting ? STATUS_STYLE.waiting.block : busy ? STATUS_STYLE.working.block : STATUS_STYLE.idle.block}`}
-      >
-        {waiting ? STATUS_STYLE.waiting.label : busy ? "WORKING" : "READY"}
-      </div>
-      <div className="min-w-0 truncate px-1.5 py-0.5">
-        <span className="font-bold">operator</span>
-        {waiting ? (
-          <span className="font-bold uppercase text-needs"> {s.statusDetail}</span>
-        ) : (
-          <span className="text-code-dim"> {s.cwd.replace(/^\/Users\/[^/]+/, "~")}</span>
+    <article className={`${waiting ? "glow-needs border-needs" : "glow-op border-white"} mt-2 flex border bg-black`}>
+      <div className={`w-2 shrink-0 ${waiting ? "pulse bg-needs" : busy ? "bg-code" : "bg-white"}`} />
+      <div className="min-w-0 flex-1 p-2">
+        <button
+          type="button"
+          onClick={onOpen}
+          className="flex w-full cursor-pointer items-center gap-2 text-left text-xs hover:bg-code-dark/50"
+          title={s.cwd}
+        >
+          <span className={`px-1.5 py-0.5 font-bold ${style?.block ?? "bg-white text-black [text-shadow:none]"}`}>
+            {style?.label ?? "READY"}
+          </span>
+          <span className="font-bold uppercase tracking-widest text-white [text-shadow:0_0_6px_rgb(255_255_255/0.6)]">
+            Operator
+          </span>
+          <span className="ml-auto flex shrink-0 items-center gap-3 text-code-dim">
+            {tally.map((t) => (
+              <span key={t.title} className="hidden items-center gap-1 sm:flex" title={t.title}>
+                <span className={`inline-block h-2 w-2 ${t.color}`} />
+                {t.count} {t.title.toLowerCase()}
+              </span>
+            ))}
+            <span>{ago(s.lastActivity, now)}</span>
+          </span>
+        </button>
+        {line && (
+          <button
+            type="button"
+            onClick={onOpen}
+            title={line}
+            className={`mt-1 block w-full cursor-pointer truncate text-left text-sm ${waiting ? "font-bold text-needs" : busy ? "text-code-dim" : "text-white"}`}
+          >
+            {"› "}
+            <WithCode text={line} refs={s.refs} />
+          </button>
         )}
+        {pending.length > 0 && (
+          <div className="mt-2 max-h-[45vh] space-y-2 overflow-y-auto">
+            {pending.map((p) => (
+              <PendingCard key={p.id} p={p} now={now} onDecide={(b, a) => onDecide(p.id, b, a)} />
+            ))}
+          </div>
+        )}
+        {pending.length === 0 && <ReplyBox sessionId={s.id} say={s.nextSay} placeholder="tell the operator (shift+enter for a new line)" />}
       </div>
-      <div className="px-1.5 py-0.5 text-right text-code-dim">{ago(s.lastActivity, now)}</div>
-    </button>
+    </article>
   );
 }
 
@@ -401,39 +451,48 @@ export function App() {
   const idle = sessions.filter((s) => s.status === "idle");
   const closed = sessions.filter((s) => s.status === "closed");
   const pending = state?.pending ?? [];
+  const operatorIds = new Set(operators.map((s) => s.id));
+  const approvals = pending.filter((p) => !operatorIds.has(p.sessionId));
   const openSession = all.find((s) => s.id === openId);
   const pendingBySession = new Map(pending.map((p) => [p.sessionId, p]));
   const groups = GROUPS.map((g) => ({ ...g, rows: sessions.filter((s) => g.statuses.includes(s.status)) }));
-  const nothingActive = state && pending.length === 0 && groups.every((g) => g.rows.length === 0);
+  const nothingActive = state && approvals.length === 0 && groups.every((g) => g.rows.length === 0);
 
   return (
-    <main className="mx-auto max-w-6xl px-4 py-4">
+    <main className="mx-auto max-w-6xl px-4 pb-4">
       <MatrixRain />
-      <header className={`${BORDER} glow flex items-baseline justify-between bg-black/85 px-2 py-1`}>
-        <h1 className="cursor text-sm font-bold uppercase tracking-widest">Session operator</h1>
-        {offline ? (
-          <span className="pulse bg-fail px-2 text-xs font-bold uppercase text-black [text-shadow:none]">connection lost</span>
-        ) : (
-          <span className="text-xs text-code-dim">{sessions.length} signals in the matrix</span>
+      <div className="sticky top-0 z-20 bg-black pb-2 pt-4">
+        <header className={`${BORDER} glow flex items-baseline justify-between bg-black/85 px-2 py-1`}>
+          <h1 className="cursor text-sm font-bold uppercase tracking-widest">Session operator</h1>
+          {offline ? (
+            <span className="pulse bg-fail px-2 text-xs font-bold uppercase text-black [text-shadow:none]">connection lost</span>
+          ) : (
+            <span className="text-xs text-code-dim">{sessions.length} signals in the matrix</span>
+          )}
+        </header>
+        {operators.map((s) => (
+          <OperatorConsole
+            key={s.id}
+            s={s}
+            now={now}
+            pending={pending.filter((p) => p.sessionId === s.id)}
+            tally={groups.filter((g) => g.rows.length > 0).map((g) => ({ title: g.title, count: g.rows.length, color: g.color }))}
+            onOpen={() => setOpenId(s.id)}
+            onDecide={(id, b, a) => void decide(id, b, a)}
+          />
+        ))}
+        {state && operators.length === 0 && (
+          <p className="mt-2 border border-dashed border-code-dim px-2 py-1 text-xs text-code-dim">
+            no operator running - start one with <code className="bg-code-dark px-1 text-white">sop operator</code>
+          </p>
         )}
-      </header>
+      </div>
 
-      {operators.length > 0 && (
+      {approvals.length > 0 && (
         <section className="mt-6">
-          <GroupHeader title="Operator" count={operators.length} color="bg-white" />
-          <div className={`${BORDER} glow divide-y divide-code-dark bg-black/85`}>
-            {operators.map((s) => (
-              <OperatorRow key={s.id} s={s} now={now} onOpen={() => setOpenId(s.id)} />
-            ))}
-          </div>
-        </section>
-      )}
-
-      {pending.length > 0 && (
-        <section className="mt-6">
-          <GroupHeader title="Approve?" count={pending.length} color="bg-needs" />
+          <GroupHeader title="Approve?" count={approvals.length} color="bg-needs" />
           <div className="space-y-2">
-            {pending.map((p) => (
+            {approvals.map((p) => (
               <PendingCard key={p.id} p={p} now={now} onDecide={(b, a) => void decide(p.id, b, a)} />
             ))}
           </div>

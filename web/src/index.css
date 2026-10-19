@@ -40,6 +40,10 @@ body::after {
   box-shadow: 0 0 8px rgb(0 255 65 / 0.35), inset 0 0 8px rgb(0 255 65 / 0.12);
 }
 
+.glow-op {
+  box-shadow: 0 0 12px rgb(255 255 255 / 0.35), inset 0 0 8px rgb(255 255 255 / 0.08);
+}
+
 .glow-needs {
   box-shadow: 0 0 12px rgb(255 176 0 / 0.5);
 }
