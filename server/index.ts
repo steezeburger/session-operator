@@ -12,7 +12,7 @@ import { streamSSE } from "hono/streaming";
 import { nextActionFor } from "./next-action.ts";
 import { refsFor } from "./refs.ts";
 import { closeSession, liveSessions, sendReply } from "./reply.ts";
-import { fullReplies, mentionCounts, readFeed, scanSessions } from "./sessions.ts";
+import { fullReplies, mentionCounts, questionAnsweredSince, readFeed, scanSessions } from "./sessions.ts";
 import type { Behavior, OperatorState, PendingDecision, Session, SessionStatus } from "./types.ts";
 
 const PORT = Number(process.env.OPERATOR_PORT ?? 4477);
@@ -41,6 +41,10 @@ interface HookStatus {
 
 const pending = new Map<string, PendingEntry>();
 const hookStatus = new Map<string, HookStatus>();
+// The tool each session last asked permission for, so a fallback "needs your permission"
+// notification can say what it's really about.
+const lastAsk = new Map<string, string>();
+const QUESTIONS_DETAIL = "Has questions for you";
 
 // Sessions started with `sop operator`. Kept on disk so a server restart doesn't forget them.
 const ROLES_FILE = join(tmpdir(), "session-operator-roles.json");
@@ -102,13 +106,32 @@ function projectName(cwd: string | undefined) {
   return cwd ? (cwd.split("/").filter(Boolean).pop() ?? cwd) : "unknown";
 }
 
+// Waking the waiters tells a hook still polling that it's gone, so it exits.
+function dropEntry(entry: PendingEntry) {
+  pending.delete(entry.id);
+  for (const w of entry.waiters) w();
+}
+
 function dropPendingFor(sessionId: string) {
-  for (const [id, entry] of pending) {
-    if (entry.sessionId === sessionId && !entry.decision) {
-      pending.delete(id);
-      for (const w of entry.waiters) w();
-    }
+  for (const entry of pending.values()) {
+    if (entry.sessionId === sessionId && !entry.decision) dropEntry(entry);
   }
+}
+
+// A card is only worth showing while a hook is waiting on it. Past its deadline the hook
+// has let go, and a question answered in the terminal needs nothing from the deck.
+async function dropStale() {
+  const now = Date.now();
+  await Promise.all(
+    [...pending.values()]
+      .filter((e) => !e.decision)
+      .map(async (e) => {
+        const stale =
+          now > new Date(e.expiresAt).getTime() ||
+          (e.toolName === "AskUserQuestion" && (await questionAnsweredSince(e.sessionId, new Date(e.createdAt).getTime())));
+        if (stale) dropEntry(e);
+      }),
+  );
 }
 
 function setHookStatus(sessionId: string, status: SessionStatus, detail: string, cwd?: string) {
@@ -204,6 +227,7 @@ async function buildState(): Promise<OperatorState> {
       }),
   );
 
+  await dropStale();
   const pendingList = [...pending.values()]
     .filter((p) => !p.decision)
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
@@ -213,7 +237,7 @@ async function buildState(): Promise<OperatorState> {
     const s = byId.get(p.sessionId);
     if (s) {
       s.status = "waiting";
-      s.statusDetail = `Needs approval: ${p.toolName}`;
+      s.statusDetail = p.toolName === "AskUserQuestion" ? QUESTIONS_DETAIL : `Needs approval: ${p.toolName}`;
     }
   }
 
@@ -318,13 +342,15 @@ app.post("/api/hook", async (c) => {
         waiters: new Set(),
       };
       pending.set(entry.id, entry);
+      lastAsk.set(sessionId, toolName);
       notify(`${project} needs approval`, `${toolName}: ${entry.summary}`);
       changed();
       return c.json({ id: entry.id });
     }
     case "Notification": {
       const type = str(body.notification_type);
-      const message = str(body.message) ?? "Waiting for you";
+      // An AskUserQuestion the deck didn't answer in time shows up as "Claude needs your permission".
+      const message = lastAsk.get(sessionId) === "AskUserQuestion" ? QUESTIONS_DETAIL : (str(body.message) ?? "Waiting for you");
       if (type === "idle_prompt") {
         setHookStatus(sessionId, "done", "Finished its turn, your move", cwd);
       } else {
@@ -336,17 +362,22 @@ app.post("/api/hook", async (c) => {
     }
     case "Stop":
       dropPendingFor(sessionId);
+      lastAsk.delete(sessionId);
       setHookStatus(sessionId, "done", "Finished its turn, your move", cwd);
       break;
     case "SessionEnd":
       dropPendingFor(sessionId);
+      lastAsk.delete(sessionId);
       setHookStatus(sessionId, "closed", "Session ended", cwd);
       break;
     case "UserPromptSubmit":
     case "PreToolUse":
     case "PostToolUse":
       // The tool ran or a new prompt came in, so any open request was answered elsewhere.
-      if (event !== "PreToolUse") dropPendingFor(sessionId);
+      if (event !== "PreToolUse") {
+        dropPendingFor(sessionId);
+        lastAsk.delete(sessionId);
+      }
       setHookStatus(sessionId, "working", "Working", cwd);
       break;
   }

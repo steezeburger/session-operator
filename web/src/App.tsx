@@ -180,7 +180,7 @@ function PendingCard({
           <span className="font-bold">
             {project} → {p.toolName}
           </span>
-          <span>terminal fallback {left}s</span>
+          <span>{questions ? `also in its terminal · ${Math.ceil(left / 60)}m left here` : `terminal fallback ${left}s`}</span>
         </div>
         {questions ? (
           <QuestionForm questions={questions} onAnswer={(answers) => onDecide("allow", answers)} />

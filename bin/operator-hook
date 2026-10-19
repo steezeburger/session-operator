@@ -6,6 +6,9 @@
 
 const BASE = process.env.OPERATOR_URL ?? "http://127.0.0.1:4477";
 const TIMEOUT_MS = Number(process.env.OPERATOR_TIMEOUT_MS ?? 120000);
+// A question also shows in the terminal while we wait, so waiting long costs nothing.
+// Keep it under the hook's "timeout" in settings.json, or Claude Code kills us first.
+const QUESTION_TIMEOUT_MS = Number(process.env.OPERATOR_QUESTION_TIMEOUT_MS ?? 3600000);
 // Set by `sop operator`, so the server knows which session is the operator.
 const ROLE = process.env.OPERATOR_ROLE ?? null;
 
@@ -26,8 +29,8 @@ async function post(path, body, ms) {
   return res.json();
 }
 
-async function waitForDecision(id) {
-  const deadline = Date.now() + TIMEOUT_MS;
+async function waitForDecision(id, ms) {
+  const deadline = Date.now() + ms;
   while (Date.now() < deadline) {
     const res = await fetch(`${BASE}/api/decisions/${id}/wait`, {
       signal: AbortSignal.timeout(30000),
@@ -45,8 +48,9 @@ async function main() {
     await post("/api/hook", { ...payload, operator_role: ROLE }, 1500);
     return;
   }
-  const { id } = await post("/api/hook", { ...payload, operator_role: ROLE, operator_timeout_ms: TIMEOUT_MS }, 2000);
-  const decision = id ? await waitForDecision(id) : null;
+  const ms = payload.tool_name === "AskUserQuestion" ? QUESTION_TIMEOUT_MS : TIMEOUT_MS;
+  const { id } = await post("/api/hook", { ...payload, operator_role: ROLE, operator_timeout_ms: ms }, 2000);
+  const decision = id ? await waitForDecision(id, ms) : null;
   if (!decision || (decision.behavior !== "allow" && decision.behavior !== "deny")) return;
   const out = { behavior: decision.behavior };
   if (decision.behavior === "deny") out.message = decision.message || "Denied from operator";

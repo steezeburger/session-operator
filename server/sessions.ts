@@ -285,8 +285,7 @@ async function readFrom(path: string, from: number, size: number): Promise<strin
   }
 }
 
-/** The whole conversation for the detail panel, oldest first. */
-export async function readFeed(id: string): Promise<FeedItem[] | null> {
+async function findTranscript(id: string): Promise<{ path: string; size: number } | null> {
   if (!SESSION_ID_RE.test(id)) return null;
   let dirs: string[];
   try {
@@ -296,24 +295,57 @@ export async function readFeed(id: string): Promise<FeedItem[] | null> {
   }
   for (const dir of dirs) {
     const path = join(PROJECTS_DIR, dir, `${id}.jsonl`);
-    let size: number;
     try {
-      size = (await stat(path)).size;
+      return { path, size: (await stat(path)).size };
+    } catch {
+      // not in this project dir
+    }
+  }
+  return null;
+}
+
+/**
+ * True if an AskUserQuestion got its answer at or after `since` (ms), wherever it was
+ * answered. Claude Code writes the question and its result only once it's answered.
+ */
+export async function questionAnsweredSince(id: string, since: number): Promise<boolean> {
+  const found = await findTranscript(id);
+  if (!found) return false;
+  const asks = new Set<string>();
+  for (const line of (await readTail(found.path, found.size)).split("\n")) {
+    let r: TranscriptRecord;
+    try {
+      r = JSON.parse(line);
     } catch {
       continue;
     }
-    let cached = feedCache.get(path);
-    if (!cached || size < cached.offset) cached = { offset: 0, items: [] };
-    if (size > cached.offset) {
-      const text = await readFrom(path, cached.offset, size);
-      // Stop at the last full line; a half-written one gets read next time.
-      const end = text.lastIndexOf("\n") + 1;
-      const items = [...cached.items];
-      for (const line of text.slice(0, end).split("\n")) if (line) items.push(...feedItems(line));
-      cached = { offset: cached.offset + Buffer.byteLength(text.slice(0, end)), items };
+    const content = r.message?.content;
+    if (!Array.isArray(content)) continue;
+    for (const b of content as { type?: string; name?: string; id?: string; tool_use_id?: string }[]) {
+      if (b?.type === "tool_use" && b.name === "AskUserQuestion" && b.id) asks.add(b.id);
+      else if (b?.type === "tool_result" && b.tool_use_id && asks.has(b.tool_use_id) && r.timestamp && Date.parse(r.timestamp) >= since) {
+        return true;
+      }
     }
-    feedCache.set(path, cached);
-    return cached.items;
   }
-  return null;
+  return false;
+}
+
+/** The whole conversation for the detail panel, oldest first. */
+export async function readFeed(id: string): Promise<FeedItem[] | null> {
+  const found = await findTranscript(id);
+  if (!found) return null;
+  const { path, size } = found;
+  let cached = feedCache.get(path);
+  if (!cached || size < cached.offset) cached = { offset: 0, items: [] };
+  if (size > cached.offset) {
+    const text = await readFrom(path, cached.offset, size);
+    // Stop at the last full line; a half-written one gets read next time.
+    const end = text.lastIndexOf("\n") + 1;
+    const items = [...cached.items];
+    for (const line of text.slice(0, end).split("\n")) if (line) items.push(...feedItems(line));
+    cached = { offset: cached.offset + Buffer.byteLength(text.slice(0, end)), items };
+  }
+  feedCache.set(path, cached);
+  return cached.items;
 }
