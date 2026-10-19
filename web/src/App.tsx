@@ -81,8 +81,95 @@ function GroupHeader({ title, count, color }: { title: string; count: number; co
   );
 }
 
-function PendingCard({ p, now, onDecide }: { p: PendingDecision; now: number; onDecide: (b: Behavior) => void }) {
+interface Question {
+  question: string;
+  header?: string;
+  multiSelect?: boolean;
+  options?: { label: string; description?: string }[];
+}
+
+const OPTION = "border px-2 py-1 text-left text-sm [text-shadow:none]";
+
+/** AskUserQuestion as clickable options. A lone single-choice question sends on click. */
+function QuestionForm({ questions, onAnswer }: { questions: Question[]; onAnswer: (answers: Record<string, string>) => void }) {
+  const [picked, setPicked] = useState<Record<string, string[]>>({});
+  const [other, setOther] = useState<Record<string, string>>({});
+  const typed = (q: Question | undefined) => (q ? (other[q.question]?.trim() ?? "") : "");
+  const answerFor = (q: Question) => [...(picked[q.question] ?? []), ...(typed(q) ? [typed(q)] : [])];
+  const ready = questions.every((q) => answerFor(q).length > 0);
+  const instant = questions.length === 1 && !questions[0]?.multiSelect;
+  const send = () => onAnswer(Object.fromEntries(questions.map((q) => [q.question, answerFor(q).join(", ")])));
+
+  const pick = (q: Question, label: string) => {
+    if (instant) return onAnswer({ [q.question]: label });
+    setPicked((cur) => {
+      const now = cur[q.question] ?? [];
+      const next = q.multiSelect ? (now.includes(label) ? now.filter((l) => l !== label) : [...now, label]) : [label];
+      return { ...cur, [q.question]: next };
+    });
+  };
+
+  return (
+    <div className="mt-1 space-y-3">
+      {questions.map((q) => (
+        <fieldset key={q.question} className="min-w-0">
+          <legend className="text-sm text-white">
+            {q.header && <span className="mr-2 border border-code-dim px-1 text-xs uppercase text-code-dim">{q.header}</span>}
+            {q.question}
+            {q.multiSelect && <span className="ml-2 text-xs text-code-dim">(pick any)</span>}
+          </legend>
+          <div className="mt-1 grid gap-1">
+            {(q.options ?? []).map((o) => {
+              const on = (picked[q.question] ?? []).includes(o.label);
+              return (
+                <button
+                  key={o.label}
+                  type="button"
+                  onClick={() => pick(q, o.label)}
+                  className={`${OPTION} ${on ? "border-code bg-code text-black" : "border-code-dim bg-black hover:border-code"}`}
+                >
+                  <span className="font-bold">{o.label}</span>
+                  {o.description && <span className={`ml-2 text-xs ${on ? "text-black" : "text-code-dim"}`}>{o.description}</span>}
+                </button>
+              );
+            })}
+            <input
+              value={other[q.question] ?? ""}
+              onChange={(e) => setOther((cur) => ({ ...cur, [q.question]: e.target.value }))}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && ready) send();
+              }}
+              placeholder="other..."
+              className="border border-code-dark bg-black px-2 py-1 text-sm text-code placeholder:text-code-dim focus:border-code focus:outline-none"
+            />
+          </div>
+        </fieldset>
+      ))}
+      {(!instant || typed(questions[0])) && (
+        <button
+          type="button"
+          disabled={!ready}
+          onClick={send}
+          className="border border-code bg-code px-5 py-1 text-sm font-bold uppercase text-black [text-shadow:none] enabled:hover:bg-black enabled:hover:text-code disabled:opacity-40"
+        >
+          Send answers
+        </button>
+      )}
+    </div>
+  );
+}
+
+function PendingCard({
+  p,
+  now,
+  onDecide,
+}: {
+  p: PendingDecision;
+  now: number;
+  onDecide: (b: Behavior, answers?: Record<string, string>) => void;
+}) {
   const left = Math.max(0, Math.round((new Date(p.expiresAt).getTime() - now) / 1000));
+  const questions = p.toolName === "AskUserQuestion" ? ((p.toolInput as { questions?: Question[] } | null)?.questions ?? null) : null;
   const input = JSON.stringify(p.toolInput, null, 2);
   const project = p.cwd.split("/").filter(Boolean).pop() ?? p.cwd;
   return (
@@ -95,29 +182,33 @@ function PendingCard({ p, now, onDecide }: { p: PendingDecision; now: number; on
           </span>
           <span>terminal fallback {left}s</span>
         </div>
-        <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all border border-code-dark bg-code-dark/40 px-2 py-1 text-xs">
-          {p.summary}
-        </pre>
-        {input && input !== JSON.stringify(p.summary) && (
+        {questions ? (
+          <QuestionForm questions={questions} onAnswer={(answers) => onDecide("allow", answers)} />
+        ) : (
+          <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all border border-code-dark bg-code-dark/40 px-2 py-1 text-xs">
+            {p.summary}
+          </pre>
+        )}
+        {!questions && input && input !== JSON.stringify(p.summary) && (
           <details className="mt-1 text-xs">
             <summary className="cursor-pointer uppercase text-code-dim">Full tool input</summary>
             <pre className={`${BORDER} mt-1 max-h-64 overflow-auto p-2`}>{input}</pre>
           </details>
         )}
         <div className="mt-2 flex items-center gap-2">
-          <button
+          {!questions && <button
             type="button"
             onClick={() => onDecide("allow")}
             className="border border-code bg-code px-5 py-1 text-sm font-bold uppercase text-black [text-shadow:none] hover:bg-black hover:text-code hover:[text-shadow:0_0_4px_rgb(0_255_65/0.6)]"
           >
             Approve
-          </button>
+          </button>}
           <button
             type="button"
             onClick={() => onDecide("deny")}
             className="border border-fail bg-fail px-5 py-1 text-sm font-bold uppercase text-black [text-shadow:none] hover:bg-black hover:text-fail"
           >
-            Deny
+            {questions ? "Skip" : "Deny"}
           </button>
           <span className="ml-2 truncate text-xs text-code-dim">{p.cwd}</span>
         </div>
@@ -191,6 +282,7 @@ function OperatorRow({ s, now, onOpen }: { s: Session; now: number; onOpen: () =
 
 // One imperative line per "needs you" session: what the user does next, not what Claude did.
 function nextStep(s: Session, pending: PendingDecision | undefined): string {
+  if (pending?.toolName === "AskUserQuestion") return `Answer above: ${pending.summary.split("\n")[0]}`;
   if (pending) return `Approve or deny ${pending.toolName} above: ${pending.summary}`;
   if (s.status === "waiting") return `In its terminal: ${s.statusDetail}`;
   if (s.nextAction) return s.nextAction;
@@ -286,11 +378,11 @@ export function App() {
   const [openId, setOpenId] = useState<string | null>(null);
   const close = useCallback(() => setOpenId(null), []);
 
-  const decide = async (id: string, behavior: Behavior) => {
+  const decide = async (id: string, behavior: Behavior, answers?: Record<string, string>) => {
     await fetch(`/api/decisions/${id}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ behavior }),
+      body: JSON.stringify({ behavior, answers }),
     });
     void refresh();
   };
@@ -335,7 +427,7 @@ export function App() {
           <GroupHeader title="Approve?" count={pending.length} color="bg-needs" />
           <div className="space-y-2">
             {pending.map((p) => (
-              <PendingCard key={p.id} p={p} now={now} onDecide={(b) => void decide(p.id, b)} />
+              <PendingCard key={p.id} p={p} now={now} onDecide={(b, a) => void decide(p.id, b, a)} />
             ))}
           </div>
         </section>

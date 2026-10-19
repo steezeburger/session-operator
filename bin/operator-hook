@@ -50,6 +50,7 @@ async function main() {
   if (!decision || (decision.behavior !== "allow" && decision.behavior !== "deny")) return;
   const out = { behavior: decision.behavior };
   if (decision.behavior === "deny") out.message = decision.message || "Denied from operator";
+  if (decision.behavior === "allow" && decision.updatedInput) out.updatedInput = decision.updatedInput;
   process.stdout.write(
     JSON.stringify({
       hookSpecificOutput: { hookEventName: "PermissionRequest", decision: out },

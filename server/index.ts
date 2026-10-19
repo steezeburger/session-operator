@@ -23,6 +23,8 @@ const WAIT_SLICE_MS = 25_000;
 interface Decision {
   behavior: Behavior;
   message?: string;
+  /** Replaces the tool's input on allow. AskUserQuestion takes its answers this way. */
+  updatedInput?: Record<string, unknown>;
 }
 
 interface PendingEntry extends PendingDecision {
@@ -87,6 +89,9 @@ function str(v: unknown): string | undefined {
 
 function summarize(toolName: string, input: unknown): string {
   const i = (input ?? {}) as Record<string, unknown>;
+  if (toolName === "AskUserQuestion" && Array.isArray(i.questions)) {
+    return (i.questions as { question?: string }[]).map((q) => q.question ?? "").join("\n");
+  }
   const direct = str(i.command) ?? str(i.file_path) ?? str(i.notebook_path) ?? str(i.url) ?? str(i.pattern);
   if (direct) return direct;
   const json = JSON.stringify(input) ?? "";
@@ -377,6 +382,13 @@ app.post("/api/decisions/:id", async (c) => {
     return c.json({ error: "behavior must be allow or deny" }, 400);
   }
   entry.decision = { behavior: body.behavior, message: str(body.message) };
+  // Picked answers to an AskUserQuestion: question text -> chosen label(s), comma-joined.
+  if (body.behavior === "allow" && entry.toolName === "AskUserQuestion" && body.answers && typeof body.answers === "object") {
+    const answers = Object.fromEntries(
+      Object.entries(body.answers as Record<string, unknown>).filter((kv): kv is [string, string] => typeof kv[1] === "string"),
+    );
+    entry.decision.updatedInput = { ...(entry.toolInput as Record<string, unknown>), answers };
+  }
   for (const w of entry.waiters) w();
   // If no hook is listening anymore, forget it after a short grace period.
   setTimeout(() => pending.delete(entry.id), 30_000);
