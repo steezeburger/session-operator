@@ -443,9 +443,13 @@ app.post("/api/sessions/:id/close", async (c) => {
   return c.json({ ok: true });
 });
 
+// The last ?limit= items (default 40); X-Feed-Total says how many there are in all.
 app.get("/api/sessions/:id/feed", async (c) => {
   const feed = await readFeed(c.req.param("id"));
-  return feed ? c.json(feed) : c.text("not found", 404);
+  if (!feed) return c.text("not found", 404);
+  const limit = Math.max(1, Number(c.req.query("limit")) || 40);
+  c.header("X-Feed-Total", String(feed.length));
+  return c.json(feed.slice(-limit));
 });
 
 app.get("/api/events", (c) =>

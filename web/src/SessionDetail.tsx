@@ -1,4 +1,4 @@
-import { type CSSProperties, type PointerEvent as ReactPointerEvent, useEffect, useRef, useState } from "react";
+import { type CSSProperties, type PointerEvent as ReactPointerEvent, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { FeedItem, Session } from "../../server/types.ts";
 import { closedOutcome, focusRefs, RefList } from "./Refs.tsx";
 import { imageFiles, ReplyBox } from "./ReplyBox.tsx";
@@ -45,10 +45,17 @@ function time(iso: string | null) {
   return iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
 }
 
+const FEED_PAGE = 40;
+
 export function SessionDetail({ session, onClose }: { session: Session; onClose: () => void }) {
   const [feed, setFeed] = useState<FeedItem[] | null>(null);
+  const [total, setTotal] = useState(0);
+  const [limit, setLimit] = useState(FEED_PAGE);
   const [missing, setMissing] = useState(false);
   const bottom = useRef<HTMLDivElement>(null);
+  const scroller = useRef<HTMLDivElement>(null);
+  // Scroll height before "load earlier", so the view stays put when older items land on top.
+  const keepFrom = useRef<number | null>(null);
   const focus = focusRefs(session);
   const [width, setWidth] = useState(savedWidth);
   const resizing = useRef(false);
@@ -89,9 +96,10 @@ export function SessionDetail({ session, onClose }: { session: Session; onClose:
     let live = true;
     const load = async () => {
       try {
-        const res = await fetch(`/api/sessions/${session.id}/feed`);
+        const res = await fetch(`/api/sessions/${session.id}/feed?limit=${limit}`);
         if (!live) return;
         if (!res.ok) return setMissing(true);
+        setTotal(Number(res.headers.get("X-Feed-Total")) || 0);
         setFeed(await res.json());
       } catch {
         // offline: the header already says so
@@ -103,11 +111,24 @@ export function SessionDetail({ session, onClose }: { session: Session; onClose:
       live = false;
       clearInterval(t);
     };
-  }, [session.id]);
+  }, [session.id, limit]);
 
-  useEffect(() => {
+  // New messages scroll to the bottom; older ones loaded on top keep the view where it was.
+  const newest = feed?.length ? `${feed.length}-${feed[feed.length - 1]?.at}` : "";
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    if (el && keepFrom.current !== null) {
+      el.scrollTop += el.scrollHeight - keepFrom.current;
+      keepFrom.current = null;
+      return;
+    }
     bottom.current?.scrollIntoView({ block: "end" });
-  }, [feed?.length]);
+  }, [newest]);
+
+  const loadEarlier = () => {
+    keepFrom.current = scroller.current?.scrollHeight ?? null;
+    setLimit((l) => l + FEED_PAGE);
+  };
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -190,8 +211,17 @@ export function SessionDetail({ session, onClose }: { session: Session; onClose:
           </div>
         </header>
 
-        <div className="flex-1 space-y-2 overflow-y-auto p-2 text-sm">
+        <div ref={scroller} className="flex-1 space-y-2 overflow-y-auto p-2 text-sm">
           {missing && <p className="text-code-dim">transcript not found</p>}
+          {feed && total > feed.length && (
+            <button
+              type="button"
+              onClick={loadEarlier}
+              className="w-full border border-dashed border-code-dim py-1 text-xs uppercase text-code-dim hover:border-code hover:text-code"
+            >
+              load earlier ({total - feed.length} more)
+            </button>
+          )}
           {!feed && !missing && <p className="cursor text-code-dim">loading</p>}
           {feed?.map((item, i) => {
             const k = KIND_STYLE[item.kind];

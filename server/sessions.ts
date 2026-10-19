@@ -216,7 +216,6 @@ export async function scanSessions(): Promise<Session[]> {
   return sessions;
 }
 
-const FEED_LIMIT = 40;
 const FEED_TEXT_MAX = 4000;
 const SESSION_ID_RE = /^[0-9a-f-]{36}$/;
 
@@ -233,7 +232,60 @@ function clipFeed(text: string): string {
   return `${text.slice(0, head)}\n…\n${text.slice(text.length - (FEED_TEXT_MAX - head - 3))}`;
 }
 
-// Recent conversation for the detail panel. Same rule as the scan: read fields, never act on them.
+// One transcript line as feed items. Same rule as the scan: read fields, never act on them.
+function feedItems(line: string): FeedItem[] {
+  let r: TranscriptRecord;
+  try {
+    r = JSON.parse(line);
+  } catch {
+    return [];
+  }
+  if (r.isSidechain) return [];
+  const at = r.timestamp ?? null;
+  // Messages typed while Claude is mid-turn are stored as queued_command attachments, not user records.
+  const a = r.attachment;
+  if (r.type === "attachment" && a?.type === "queued_command" && a.origin?.kind === "human" && typeof a.prompt === "string") {
+    return a.prompt.trim() ? [{ kind: "user", text: clipFeed(a.prompt.trim()), at }] : [];
+  }
+  if (r.type !== "user" && r.type !== "assistant") return [];
+  const content = r.message?.content;
+  if (r.isApiErrorMessage) return [{ kind: "error", text: clipFeed(assistantText(r) ?? "API error"), at }];
+  if (typeof content === "string") {
+    // Harness-injected user records (reminders, command echoes) start with a tag.
+    return r.type === "user" && !content.trimStart().startsWith("<") ? [{ kind: "user", text: clipFeed(content), at }] : [];
+  }
+  if (!Array.isArray(content)) return [];
+  const out: FeedItem[] = [];
+  for (const b of content as { type?: string; text?: string; is_error?: boolean; content?: unknown }[]) {
+    if (b?.type === "text" && b.text?.trim()) {
+      if (r.type === "user" && b.text.trimStart().startsWith("<")) continue;
+      out.push({ kind: r.type === "user" ? "user" : "assistant", text: clipFeed(b.text.trim()), at });
+    } else if (b?.type === "tool_use") {
+      out.push({ kind: "tool", text: clipFeed(toolLine(b as { name?: string; input?: Record<string, unknown> })), at });
+    } else if (b?.type === "tool_result" && b.is_error) {
+      const text = typeof b.content === "string" ? b.content : JSON.stringify(b.content);
+      out.push({ kind: "error", text: clipFeed(text), at });
+    }
+  }
+  return out;
+}
+
+// Whole-transcript feeds, parsed once and then only the bytes appended since. The panel
+// polls every few seconds, and transcripts run to tens of MB.
+const feedCache = new Map<string, { offset: number; items: FeedItem[] }>();
+
+async function readFrom(path: string, from: number, size: number): Promise<string> {
+  const handle = await open(path, "r");
+  try {
+    const buf = Buffer.alloc(size - from);
+    await handle.read(buf, 0, buf.length, from);
+    return buf.toString("utf8");
+  } finally {
+    await handle.close();
+  }
+}
+
+/** The whole conversation for the detail panel, oldest first. */
 export async function readFeed(id: string): Promise<FeedItem[] | null> {
   if (!SESSION_ID_RE.test(id)) return null;
   let dirs: string[];
@@ -250,48 +302,18 @@ export async function readFeed(id: string): Promise<FeedItem[] | null> {
     } catch {
       continue;
     }
-    const feed: FeedItem[] = [];
-    for (const line of (await readTail(path, size)).split("\n")) {
-      if (!line) continue;
-      let r: TranscriptRecord;
-      try {
-        r = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      if (r.isSidechain) continue;
-      const at = r.timestamp ?? null;
-      // Messages typed while Claude is mid-turn are stored as queued_command attachments, not user records.
-      const a = r.attachment;
-      if (r.type === "attachment" && a?.type === "queued_command" && a.origin?.kind === "human" && typeof a.prompt === "string") {
-        if (a.prompt.trim()) feed.push({ kind: "user", text: clipFeed(a.prompt.trim()), at });
-        continue;
-      }
-      if (r.type !== "user" && r.type !== "assistant") continue;
-      const content = r.message?.content;
-      if (r.isApiErrorMessage) {
-        feed.push({ kind: "error", text: clipFeed(assistantText(r) ?? "API error"), at });
-        continue;
-      }
-      if (typeof content === "string") {
-        // Harness-injected user records (reminders, command echoes) start with a tag.
-        if (r.type === "user" && !content.trimStart().startsWith("<")) feed.push({ kind: "user", text: clipFeed(content), at });
-        continue;
-      }
-      if (!Array.isArray(content)) continue;
-      for (const b of content as { type?: string; text?: string; is_error?: boolean; content?: unknown }[]) {
-        if (b?.type === "text" && b.text?.trim()) {
-          if (r.type === "user" && b.text.trimStart().startsWith("<")) continue;
-          feed.push({ kind: r.type === "user" ? "user" : "assistant", text: clipFeed(b.text.trim()), at });
-        } else if (b?.type === "tool_use") {
-          feed.push({ kind: "tool", text: clipFeed(toolLine(b as { name?: string; input?: Record<string, unknown> })), at });
-        } else if (b?.type === "tool_result" && b.is_error) {
-          const text = typeof b.content === "string" ? b.content : JSON.stringify(b.content);
-          feed.push({ kind: "error", text: clipFeed(text), at });
-        }
-      }
+    let cached = feedCache.get(path);
+    if (!cached || size < cached.offset) cached = { offset: 0, items: [] };
+    if (size > cached.offset) {
+      const text = await readFrom(path, cached.offset, size);
+      // Stop at the last full line; a half-written one gets read next time.
+      const end = text.lastIndexOf("\n") + 1;
+      const items = [...cached.items];
+      for (const line of text.slice(0, end).split("\n")) if (line) items.push(...feedItems(line));
+      cached = { offset: cached.offset + Buffer.byteLength(text.slice(0, end)), items };
     }
-    return feed.slice(-FEED_LIMIT);
+    feedCache.set(path, cached);
+    return cached.items;
   }
   return null;
 }
