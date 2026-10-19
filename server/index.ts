@@ -195,8 +195,15 @@ async function buildState(): Promise<OperatorState> {
   for (const s of byId.values()) {
     const text = fullReplies.get(s.id);
     // The operator is the controller, not a worker: no next step of its own.
-    if (s.role === "operator" || (s.status !== "done" && s.status !== "working") || !text) continue;
+    const finishedIdle = s.status === "idle" && s.live && s.turnEnd === "finished";
+    if (s.role === "operator" || (s.status !== "done" && s.status !== "working" && !finishedIdle) || !text) continue;
     const ai = nextActionFor(s.id, s.cwd, text, changed);
+    // An old finished turn goes idle, unless its last message still asks something of you.
+    if (finishedIdle) {
+      if (!ai?.needsUser) continue;
+      s.status = "done";
+      s.statusDetail = "Finished its turn, your move";
+    }
     // A working session only borrows "waiting on X" (e.g. polling a deploy); its asks aren't final yet.
     if (s.status === "working") {
       if (ai?.blockedOn) {
