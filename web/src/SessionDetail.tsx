@@ -56,6 +56,10 @@ export function SessionDetail({ session, onClose }: { session: Session; onClose:
   const scroller = useRef<HTMLDivElement>(null);
   // Scroll height before "load earlier", so the view stays put when older items land on top.
   const keepFrom = useRef<number | null>(null);
+  // Follow new messages only while the view sits at the bottom. Scrolled up to read, it
+  // stays put and counts what arrived below; scrolling back down (or sending) follows again.
+  const following = useRef(true);
+  const [seen, setSeen] = useState<FeedItem | null>(null);
   const focus = focusRefs(session);
   const [width, setWidth] = useState(savedWidth);
   const resizing = useRef(false);
@@ -113,7 +117,7 @@ export function SessionDetail({ session, onClose }: { session: Session; onClose:
     };
   }, [session.id, limit]);
 
-  // New messages scroll to the bottom; older ones loaded on top keep the view where it was.
+  // New messages scroll to the bottom if following; older ones loaded on top keep the view where it was.
   const newest = feed?.length ? `${feed.length}-${feed[feed.length - 1]?.at}` : "";
   useLayoutEffect(() => {
     const el = scroller.current;
@@ -122,8 +126,35 @@ export function SessionDetail({ session, onClose }: { session: Session; onClose:
       keepFrom.current = null;
       return;
     }
+    if (!following.current) return;
     bottom.current?.scrollIntoView({ block: "end" });
+    setSeen(feed?.at(-1) ?? null);
   }, [newest]);
+
+  const onScroll = () => {
+    const el = scroller.current;
+    if (!el) return;
+    following.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    if (following.current) setSeen(feed?.at(-1) ?? null);
+  };
+
+  const jumpToBottom = () => {
+    following.current = true;
+    bottom.current?.scrollIntoView({ block: "end", behavior: "smooth" });
+    setSeen(feed?.at(-1) ?? null);
+  };
+
+  // How many messages landed below the view since the user scrolled up. -1: some, count unknown
+  // (the last one seen fell out of the loaded page).
+  const unseen = (() => {
+    if (!feed?.length || !seen) return 0;
+    const last = feed.at(-1);
+    if (last?.at === seen.at && last?.text === seen.text) return 0;
+    for (let i = feed.length - 1; i >= 0; i--) {
+      if (feed[i]?.at === seen.at && feed[i]?.text === seen.text) return feed.length - 1 - i;
+    }
+    return -1;
+  })();
 
   const loadEarlier = () => {
     keepFrom.current = scroller.current?.scrollHeight ?? null;
@@ -211,37 +242,48 @@ export function SessionDetail({ session, onClose }: { session: Session; onClose:
           </div>
         </header>
 
-        <div ref={scroller} className="flex-1 space-y-2 overflow-y-auto p-2 text-sm">
-          {missing && <p className="text-code-dim">transcript not found</p>}
-          {feed && total > feed.length && (
+        <div className="relative flex min-h-0 flex-1 flex-col">
+          <div ref={scroller} onScroll={onScroll} className="flex-1 space-y-2 overflow-y-auto p-2 text-sm">
+            {missing && <p className="text-code-dim">transcript not found</p>}
+            {feed && total > feed.length && (
+              <button
+                type="button"
+                onClick={loadEarlier}
+                className="w-full border border-dashed border-code-dim py-1 text-xs uppercase text-code-dim hover:border-code hover:text-code"
+              >
+                load earlier ({total - feed.length} more)
+              </button>
+            )}
+            {!feed && !missing && <p className="cursor text-code-dim">loading</p>}
+            {feed?.map((item, i) => {
+              const k = KIND_STYLE[item.kind];
+              return (
+                <div key={`${item.at}-${i}`} className={`border-l-2 pl-2 ${k.cls}`}>
+                  <div className="text-[10px] uppercase tracking-widest text-code-dim">
+                    {k.label} {time(item.at)}
+                  </div>
+                  <div className="whitespace-pre-wrap break-words">
+                    <Linkified text={item.text} session={session} />
+                  </div>
+                </div>
+              );
+            })}
+            <div ref={bottom} />
+          </div>
+          {unseen !== 0 && (
             <button
               type="button"
-              onClick={loadEarlier}
-              className="w-full border border-dashed border-code-dim py-1 text-xs uppercase text-code-dim hover:border-code hover:text-code"
+              onClick={jumpToBottom}
+              className="absolute bottom-2 left-1/2 -translate-x-1/2 border border-code bg-black px-3 py-0.5 text-xs font-bold uppercase hover:bg-code hover:text-black hover:[text-shadow:none]"
             >
-              load earlier ({total - feed.length} more)
+              ↓ {unseen > 0 ? `${unseen} new` : "new messages"}
             </button>
           )}
-          {!feed && !missing && <p className="cursor text-code-dim">loading</p>}
-          {feed?.map((item, i) => {
-            const k = KIND_STYLE[item.kind];
-            return (
-              <div key={`${item.at}-${i}`} className={`border-l-2 pl-2 ${k.cls}`}>
-                <div className="text-[10px] uppercase tracking-widest text-code-dim">
-                  {k.label} {time(item.at)}
-                </div>
-                <div className="whitespace-pre-wrap break-words">
-                  <Linkified text={item.text} session={session} />
-                </div>
-              </div>
-            );
-          })}
-          <div ref={bottom} />
         </div>
 
         <footer className="border-t border-code-dim p-2">
           {session.live ? (
-            <ReplyBox sessionId={session.id} say={session.nextSay} autoFocus images={images} />
+            <ReplyBox sessionId={session.id} say={session.nextSay} autoFocus images={images} onSent={jumpToBottom} />
           ) : (
             <p className="text-xs text-code-dim">not running - can't reply from here</p>
           )}
