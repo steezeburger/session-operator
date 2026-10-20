@@ -92,3 +92,22 @@ export interface FeedItem {
   text: string;
   at: string | null;
 }
+
+/** One thing a session left behind that ending it can clean up. */
+export interface CleanupItem {
+  /** "pid:<n>", "worktree", "branch" or "scratch". */
+  id: string;
+  kind: "process" | "worktree" | "branch" | "scratch";
+  label: string;
+  /** Why it's safe, or why it isn't offered. */
+  detail: string;
+  available: boolean;
+  /** Ticked when the checklist opens. */
+  defaultOn: boolean;
+}
+
+export interface CleanupResult {
+  id: string;
+  ok: boolean;
+  error?: string;
+}

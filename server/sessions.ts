@@ -365,3 +365,23 @@ export async function readFeed(id: string): Promise<FeedItem[] | null> {
   feedCache.set(path, cached);
   return cached.items;
 }
+
+/** Where a session runs and when it started, from the head of its transcript. */
+export async function sessionOrigin(id: string): Promise<{ cwd: string; startedAt: number } | null> {
+  const found = await findTranscript(id);
+  if (!found) return null;
+  let cwd: string | undefined;
+  let startedAt: number | undefined;
+  for (const line of (await readFrom(found.path, 0, Math.min(found.size, TAIL_BYTES))).split("\n")) {
+    let r: TranscriptRecord;
+    try {
+      r = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    cwd ??= r.cwd;
+    if (r.timestamp) startedAt ??= Date.parse(r.timestamp);
+    if (cwd && startedAt) return { cwd, startedAt };
+  }
+  return null;
+}
