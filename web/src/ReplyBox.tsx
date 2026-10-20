@@ -98,6 +98,7 @@ export function ReplyBox({
   say,
   autoFocus,
   images: lifted,
+  onSent,
   placeholder = "reply to claude (shift+enter for a new line, drop or paste images)",
 }: {
   sessionId: string;
@@ -105,6 +106,7 @@ export function ReplyBox({
   say?: string | null;
   autoFocus?: boolean;
   images?: Images;
+  onSent?: () => void;
 }) {
   const [text, setText] = useDraft(sessionId);
   const [status, setStatus] = useState<{ ok: boolean; msg: string } | null>(null);
@@ -129,6 +131,7 @@ export function ReplyBox({
     setText("");
     setImages([]);
     setStatus({ ok: true, msg: "sent" });
+    onSent?.();
     setTimeout(() => setStatus(null), 2000);
   };
 

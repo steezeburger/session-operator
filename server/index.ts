@@ -225,6 +225,10 @@ async function buildState(): Promise<OperatorState> {
       if (ai.blockedOn) {
         s.status = "blocked";
         s.blockedOn = ai.blockedOn;
+      } else if (!ai.needsUser) {
+        // Finished and asked nothing: not your move, just idle.
+        s.status = "idle";
+        s.statusDetail = "Finished, nothing asked";
       }
     }
   }

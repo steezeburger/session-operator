@@ -556,7 +556,7 @@ export function App() {
         </details>
       )}
 
-      {openSession && <SessionDetail session={openSession} onClose={close} />}
+      {openSession && <SessionDetail key={openSession.id} session={openSession} onClose={close} />}
     </main>
   );
 }
