@@ -9,7 +9,7 @@ runs the others. Hono server on 127.0.0.1:4477, React + Tailwind v4 web app (Mat
 - `server/sessions.ts` - reads `~/.claude/projects/*/*.jsonl` transcripts into `Session`s
 - `server/refs.ts` - card/issue/PR refs for a session, one adapter per tracker (Shortcut, GitHub)
 - `server/next-action.ts` - what a session needs from the user
-- `server/reply.ts` - types into a session's iTerm tab, `closeSession` (`/exit` + close tab)
+- `server/reply.ts` - types into a session's iTerm tab or tmux pane, `closeSession` (`/exit` + close it)
 - `web/src/` - `App.tsx` (list + operator strip), `SessionDetail.tsx` (panel), `Refs.tsx`
 - `bin/operator-hook` - the Claude Code hook; posts each event to the server
 - `bin/sop` - the operator's CLI (`ls`, `feed`, `say`, `end`, `start`, `operator`)
@@ -28,7 +28,7 @@ runs the others. Hono server on 127.0.0.1:4477, React + Tailwind v4 web app (Mat
   UserPromptSubmit), all pointing at `bin/operator-hook`. Approvals wait on the deck for up to
   an hour; the terminal shows the same prompt meanwhile, and answering either one wins.
 - `sop` is symlinked into `~/.local/bin`. Not `op`, that's 1Password.
-- Env: `OPERATOR_URL`, `OPERATOR_PORT`, `OPERATOR_ROLE` (set by `sop operator`),
+- Env: `OPERATOR_URL`, `OPERATOR_PORT`, `OPERATOR_ROLE` (set by `sop operator`), `OPERATOR_TERMINAL` (`iterm` or `tmux`, for `sop start`, default iterm),
   `OPERATOR_NUDGES=0` and `OPERATOR_NOTIFY=0` to turn those off.
 - Card refs read `SHORTCUT_API_TOKEN`. Never print it.
 

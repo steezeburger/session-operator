@@ -17,11 +17,12 @@ const USAGE = `sop - session operator
   sop ls                          every session: who, status, what it needs
   sop feed <who> [n]              a session's last n messages (default 12)
   sop say <who> <text...>         type a message into a session and press Enter
-  sop end <who>                   /exit a session and close its iTerm tab
+  sop end <who>                   /exit a session and close its iTerm tab or tmux pane
   sop start <dir> [options] <prompt...>
       --worktree <branch>          make a git worktree for <branch> off --base first
       --base <ref>                 base for the new branch (default origin/main)
-      --badge <label>              iTerm badge for the new tab
+      --badge <label>              iTerm badge for the new tab, or tmux window name
+      --term iterm|tmux            where to start it (default $OPERATOR_TERMINAL, else iterm)
 
 <who> is a session id prefix, a card like sc-8121, a project name, or part of a branch.`;
 
@@ -114,11 +115,13 @@ function start(args) {
   const rest = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
-    if (a === "--worktree" || a === "--base" || a === "--badge") opts[a.slice(2)] = args[++i];
+    if (a === "--worktree" || a === "--base" || a === "--badge" || a === "--term") opts[a.slice(2)] = args[++i];
     else rest.push(a);
   }
   const [dirArg, ...promptWords] = rest;
-  if (!dirArg || promptWords.length === 0) die("sop start <dir> [--worktree <branch>] [--badge <label>] <prompt>");
+  if (!dirArg || promptWords.length === 0) die("sop start <dir> [--worktree <branch>] [--badge <label>] [--term iterm|tmux] <prompt>");
+  const term = opts.term ?? process.env.OPERATOR_TERMINAL ?? "iterm";
+  if (term !== "tmux" && term !== "iterm") die(`--term is iterm or tmux, not "${term}"`);
   let dir = resolve(dirArg);
   if (!existsSync(dir)) die(`${dir} doesn't exist`);
   if (opts.worktree) {
@@ -132,6 +135,25 @@ function start(args) {
   }
   const badge = opts.badge ?? (opts.worktree ? opts.worktree.split("/")[0] : basename(dir));
   const prompt = promptWords.join(" ");
+  if (term === "tmux") startInTmux(dir, badge, prompt);
+  else startInIterm(dir, badge, prompt);
+  console.log(`started a session in ${dir} (${term === "tmux" ? "tmux window" : "badge"} "${badge}")`);
+}
+
+// A new window in this tmux session, or in a detached "sop" session when sop isn't running
+// inside tmux (tmux attach -t sop to see them). claude runs as the window's command, as argv,
+// so the window closes when it exits.
+function startInTmux(dir, name, prompt) {
+  const window = ["-n", name, "-c", dir, "--", "claude", prompt];
+  if (process.env.TMUX) return execFileSync("tmux", ["new-window", "-d", ...window]);
+  // The first one makes the session, so there's no stray shell window in it.
+  if (spawnSync("tmux", ["has-session", "-t", "=sop"], { stdio: "ignore" }).status !== 0) {
+    return execFileSync("tmux", ["new-session", "-d", "-s", "sop", ...window]);
+  }
+  execFileSync("tmux", ["new-window", "-d", "-t", "=sop:", ...window]);
+}
+
+function startInIterm(dir, badge, prompt) {
   // Values go in as argv and through `quoted form of`, never spliced into script source.
   const script = `
 on run argv
@@ -144,7 +166,6 @@ on run argv
   end tell
 end run`;
   execFileSync("osascript", ["-e", script, dir, badge, prompt]);
-  console.log(`started a session in ${dir} (badge "${badge}")`);
 }
 
 // The operator is a Claude session with docs/operator-prompt.md appended to its system

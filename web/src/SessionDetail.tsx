@@ -297,7 +297,7 @@ export function SessionDetail({ session, onClose, decisions = [] }: { session: S
   );
 }
 
-// Exits Claude and closes its iTerm tab. First click arms it, second click does it.
+// Exits Claude and closes its iTerm tab or tmux pane. First click arms it, second click does it.
 function EndSessionButton({ sessionId, onEnded }: { sessionId: string; onEnded: () => void }) {
   const [armed, setArmed] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -334,7 +334,7 @@ function EndSessionButton({ sessionId, onEnded }: { sessionId: string; onEnded: 
         type="button"
         disabled={busy}
         onClick={() => (armed ? void end() : setArmed(true))}
-        title="Exit Claude and close its iTerm tab"
+        title="Exit Claude and close its iTerm tab or tmux pane"
         className={`border px-2 text-xs uppercase ${
           armed ? "border-fail bg-fail font-bold text-black [text-shadow:none]" : "border-code-dim text-fail hover:border-fail"
         }`}
