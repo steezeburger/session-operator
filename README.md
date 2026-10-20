@@ -24,7 +24,7 @@ Env vars:
 
 - `OPERATOR_PORT` - server port (default 4477)
 - `OPERATOR_NOTIFY=0` - turn off macOS notifications
-- `OPERATOR_URL` / `OPERATOR_TIMEOUT_MS` - read by `bin/operator-hook` (defaults `http://127.0.0.1:4477`, `120000`)
+- `OPERATOR_URL` / `OPERATOR_TIMEOUT_MS` - read by `bin/operator-hook` (defaults `http://127.0.0.1:4477`, `3600000`)
 
 ## The operator
 
@@ -73,11 +73,12 @@ Claude Code ──hook stdin──▶ bin/operator-hook ──POST /api/hook─�
   - working (green) - mid-turn with recent activity
   - idle (gray) - anything quieter, including sessions stopped mid-turn over an hour ago
 - **Approvals.** On `PermissionRequest`, `operator-hook` posts the payload, the server queues
-  it and fires a macOS notification, and the hook long-polls for your click. Approve or
-  Deny becomes the hook's JSON decision.
+  it and fires a macOS notification, and the hook long-polls for your click. Approve, Deny,
+  or one of Claude Code's own "don't ask again" rules becomes the hook's JSON decision. The
+  terminal shows the same prompt meanwhile; answer it there and the deck drops the card.
 - **Fail-safe.** The hook never approves on its own. If the server is down, errors, or
-  nobody clicks before `OPERATOR_TIMEOUT_MS`, the hook exits 0 with no output and Claude
-  Code shows its normal permission prompt.
+  nobody clicks before `OPERATOR_TIMEOUT_MS` (an hour), the hook exits 0 with no output and
+  the terminal prompt carries on alone.
 - **Localhost only.** The server binds 127.0.0.1, rejects other Host headers (DNS
   rebinding) and non-localhost Origins, and POSTs must be `application/json`. No auth
   past that.
@@ -97,7 +98,7 @@ them, don't replace them):
 {
   "hooks": {
     "PermissionRequest": [
-      { "hooks": [{ "type": "command", "command": "$HOME/code/ai/session-operator/bin/operator-hook", "timeout": 180 }] }
+      { "hooks": [{ "type": "command", "command": "$HOME/code/ai/session-operator/bin/operator-hook", "timeout": 3660 }] }
     ],
     "Notification": [
       { "hooks": [{ "type": "command", "command": "$HOME/code/ai/session-operator/bin/operator-hook", "timeout": 5 }] }
@@ -115,12 +116,9 @@ them, don't replace them):
 }
 ```
 
-The `PermissionRequest` timeout (180s) needs to be above `OPERATOR_TIMEOUT_MS` (120s) plus
-one 30s poll, so the hook falls back on its own before Claude Code kills it. Killed
-would still be safe though, Claude Code just shows the prompt.
-
-Heads up: while the hook is waiting, the terminal prompt may not show until it gives
-up. If that gets annoying, lower `OPERATOR_TIMEOUT_MS` (e.g. `"command": "OPERATOR_TIMEOUT_MS=45000 $HOME/code/ai/session-operator/bin/operator-hook"`).
+The `PermissionRequest` timeout (3660s) needs to be above `OPERATOR_TIMEOUT_MS` (an hour)
+plus one 25s poll, so the hook lets go on its own before Claude Code kills it. Killed
+would still be safe though, the terminal prompt is up the whole time.
 
 ## Try it without installing the hook
 

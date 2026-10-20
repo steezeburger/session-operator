@@ -95,7 +95,7 @@ type Images = [File[], Dispatch<SetStateAction<File[]>>];
 // or handed in by the parent panel) go first as file paths, which Claude Code attaches.
 export function ReplyBox({
   sessionId,
-  say,
+  says = [],
   autoFocus,
   images: lifted,
   onSent,
@@ -103,7 +103,7 @@ export function ReplyBox({
 }: {
   sessionId: string;
   placeholder?: string;
-  say?: string | null;
+  says?: string[];
   autoFocus?: boolean;
   images?: Images;
   onSent?: () => void;
@@ -167,16 +167,21 @@ export function ReplyBox({
           void send(text);
         }}
       >
-        {say && (
-          <button
-            type="button"
-            onClick={() => void send(say)}
-            disabled={sending}
-            title={say}
-            className="max-w-full basis-full truncate border border-needs px-2 text-left text-sm font-bold text-needs hover:bg-needs hover:text-black hover:[text-shadow:none]"
-          >
-            say "{say}"
-          </button>
+        {says.length > 0 && (
+          <div className="flex basis-full flex-wrap gap-2">
+            {says.map((say) => (
+              <button
+                key={say}
+                type="button"
+                onClick={() => void send(say)}
+                disabled={sending}
+                title={say}
+                className="max-w-full truncate border border-needs px-2 text-left text-sm font-bold text-needs hover:bg-needs hover:text-black hover:[text-shadow:none]"
+              >
+                say "{say}"
+              </button>
+            ))}
+          </div>
         )}
         <div className="flex min-w-0 flex-1 items-start border border-code-dim bg-black focus-within:border-code">
           <span className="py-1 pl-2 text-sm text-code-dim">{">"}</span>

@@ -166,7 +166,7 @@ export function parseTranscript(id: string, text: string, mtime: Date): Session 
     lastReply: clipTail(lastReply),
     nextAction: extractNextAction(lastReply),
     nextUrl: null,
-    nextSay: null,
+    nextSays: [],
     nextLoading: false,
     live: false,
     blockedOn: null,
@@ -234,6 +234,18 @@ function clipFeed(text: string): string {
 }
 
 // One transcript line as feed items. Same rule as the scan: read fields, never act on them.
+// "<command-name>/push</command-name>...<command-args>x</command-args>" -> "/push x",
+// "<bash-input>gs</bash-input>" -> "! gs". Anything else tagged is the harness talking.
+function typedCommand(content: string): string | null {
+  const tag = (name: string) => content.match(new RegExp(`<${name}>([\\s\\S]*?)</${name}>`))?.[1]?.trim();
+  const bash = tag("bash-input");
+  if (bash) return `! ${bash}`;
+  const name = tag("command-name");
+  if (!name) return null;
+  const args = tag("command-args");
+  return args ? `${name} ${args}` : name;
+}
+
 function feedItems(line: string): FeedItem[] {
   let r: TranscriptRecord;
   try {
@@ -252,8 +264,11 @@ function feedItems(line: string): FeedItem[] {
   const content = r.message?.content;
   if (r.isApiErrorMessage) return [{ kind: "error", text: clipFeed(assistantText(r) ?? "API error"), at }];
   if (typeof content === "string") {
-    // Harness-injected user records (reminders, command echoes) start with a tag.
-    return r.type === "user" && !content.trimStart().startsWith("<") ? [{ kind: "user", text: clipFeed(content), at }] : [];
+    if (r.type !== "user") return [];
+    // Harness-injected user records (reminders, command output) start with a tag. Slash and
+    // ! commands do too, but those you typed, so they show as you typed them.
+    const typed = content.trimStart().startsWith("<") ? typedCommand(content) : content;
+    return typed ? [{ kind: "user", text: clipFeed(typed), at }] : [];
   }
   if (!Array.isArray(content)) return [];
   const out: FeedItem[] = [];
@@ -306,10 +321,10 @@ async function findTranscript(id: string): Promise<{ path: string; size: number 
 }
 
 /**
- * True if an AskUserQuestion got its answer at or after `since` (ms), wherever it was
- * answered. Claude Code writes the question and its result only once it's answered.
+ * True if a `toolName` call got its result at or after `since` (ms): the question was answered
+ * or the approval decided, wherever that happened.
  */
-export async function questionAnsweredSince(id: string, since: number): Promise<boolean> {
+export async function toolResolvedSince(id: string, toolName: string, since: number): Promise<boolean> {
   const found = await findTranscript(id);
   if (!found) return false;
   const asks = new Set<string>();
@@ -323,7 +338,7 @@ export async function questionAnsweredSince(id: string, since: number): Promise<
     const content = r.message?.content;
     if (!Array.isArray(content)) continue;
     for (const b of content as { type?: string; name?: string; id?: string; tool_use_id?: string }[]) {
-      if (b?.type === "tool_use" && b.name === "AskUserQuestion" && b.id) asks.add(b.id);
+      if (b?.type === "tool_use" && b.name === toolName && b.id) asks.add(b.id);
       else if (b?.type === "tool_result" && b.tool_use_id && asks.has(b.tool_use_id) && r.timestamp && Date.parse(r.timestamp) >= since) {
         return true;
       }
