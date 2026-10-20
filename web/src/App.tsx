@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import type { Behavior, OperatorState, PendingDecision, Ref, Session, SessionStatus } from "../../server/types.ts";
+import type { Behavior, OperatorState, PendingDecision, Session, SessionStatus } from "../../server/types.ts";
 import { MatrixRain } from "./MatrixRain.tsx";
-import { closedOutcome, focusRefs, RefList, refLabel, WithMentions } from "./Refs.tsx";
+import { closedOutcome, focusRefs, RefLink, RefList, WithMentions } from "./Refs.tsx";
 import { ReplyBox } from "./ReplyBox.tsx";
 import { SessionDetail } from "./SessionDetail.tsx";
 
@@ -230,16 +230,26 @@ function SessionRow({ s, now, onOpen }: { s: Session; now: number; onOpen: () =>
     outcome?.text ??
     (s.status === "blocked" ? (s.blockedOn ?? "-") : s.status === "waiting" || s.status === "failing" ? s.statusDetail : style.next);
   return (
-    <button
-      type="button"
+    // A div, not a button: it holds ref links, and links can't nest in a button.
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onOpen}
+      onKeyDown={(e) => e.key === "Enter" && onOpen()}
       className="grid w-full cursor-pointer grid-cols-[5.5rem_1fr_2.5rem] items-stretch text-left text-xs leading-tight hover:bg-code-dark/50 md:grid-cols-[5.5rem_15rem_1fr_14rem_2.5rem]"
     >
       <div className={`px-1.5 py-0.5 font-bold ${style.block}`}>{style.label}</div>
       <div className="min-w-0 truncate px-1.5 py-0.5" title={`${s.cwd}${s.branch ? ` (${s.branch})` : ""}`}>
         <span className="font-bold">{repoName(s)}</span>
         {refs.length > 0 ? (
-          <span className="text-white"> {refs.map(refLabel).join(" · ")}</span>
+          <span className="text-white">
+            {refs.map((r, i) => (
+              <span key={`${r.tracker}:${r.id}`}>
+                {i === 0 ? " " : " · "}
+                <RefLink r={r} />
+              </span>
+            ))}
+          </span>
         ) : (
           s.branch && <span className="text-code-dim"> {s.branch}</span>
         )}
@@ -254,7 +264,7 @@ function SessionRow({ s, now, onOpen }: { s: Session; now: number; onOpen: () =>
         {next}
       </div>
       <div className="px-1.5 py-0.5 text-right text-code-dim">{ago(s.lastActivity, now)}</div>
-    </button>
+    </div>
   );
 }
 
@@ -321,7 +331,7 @@ function OperatorConsole({
             className={`mt-1 block w-full cursor-pointer truncate text-left text-sm ${waiting ? "font-bold text-needs" : busy ? "text-code-dim" : "text-white"}`}
           >
             {"› "}
-            <WithCode text={line} refs={s.refs} />
+            <WithCode text={line} s={s} />
           </button>
         )}
         {pending.length > 0 && (
@@ -347,7 +357,7 @@ function nextStep(s: Session, pending: PendingDecision | undefined): string {
 }
 
 // `code` spans from Claude's text, shown as bright chips so commands stand out.
-function WithCode({ text, refs = [] }: { text: string; refs?: Ref[] }) {
+function WithCode({ text, s }: { text: string; s: Session }) {
   return (
     <>
       {text.split(/(`[^`]+`)/).map((part, i) =>
@@ -356,7 +366,7 @@ function WithCode({ text, refs = [] }: { text: string; refs?: Ref[] }) {
             {part.slice(1, -1)}
           </code>
         ) : (
-          <WithMentions key={i} text={part} refs={refs} />
+          <WithMentions key={i} text={part} s={s} />
         ),
       )}
     </>
@@ -391,7 +401,7 @@ function NeedsYouCard({
         <RefList refs={focus.own} className="mt-1" />
         <p className="mt-1 text-lg font-bold text-needs [text-shadow:0_0_6px_rgb(255_176_0/0.7)]">
           {"→ "}
-          {action ? <WithCode text={action} refs={s.refs} /> : <span className="cursor text-code-dim">decoding next step</span>}
+          {action ? <WithCode text={action} s={s} /> : <span className="cursor text-code-dim">decoding next step</span>}
         </p>
         {s.nextUrl && (
           <div className="mt-1 flex flex-wrap items-center gap-2 text-sm">

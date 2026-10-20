@@ -1,4 +1,36 @@
-import { type Dispatch, type SetStateAction, useEffect, useState } from "react";
+import { type Dispatch, type SetStateAction, useEffect, useState, useSyncExternalStore } from "react";
+
+// Unsent text per session, shared by every reply box for that session, so closing the
+// panel (or a reload) doesn't throw it away.
+const DRAFT_KEY = "operator.drafts";
+const drafts: Record<string, string> = (() => {
+  try {
+    return JSON.parse(sessionStorage.getItem(DRAFT_KEY) ?? "{}") as Record<string, string>;
+  } catch {
+    return {};
+  }
+})();
+const draftListeners = new Set<() => void>();
+
+function setDraft(sessionId: string, text: string) {
+  if (text) drafts[sessionId] = text;
+  else delete drafts[sessionId];
+  try {
+    sessionStorage.setItem(DRAFT_KEY, JSON.stringify(drafts));
+  } catch {}
+  for (const l of draftListeners) l();
+}
+
+function useDraft(sessionId: string): [string, (text: string) => void] {
+  const text = useSyncExternalStore(
+    (l) => {
+      draftListeners.add(l);
+      return () => draftListeners.delete(l);
+    },
+    () => drafts[sessionId] ?? "",
+  );
+  return [text, (t) => setDraft(sessionId, t)];
+}
 
 export async function postReply(sessionId: string, text: string): Promise<string | null> {
   try {
@@ -74,7 +106,7 @@ export function ReplyBox({
   autoFocus?: boolean;
   images?: Images;
 }) {
-  const [text, setText] = useState("");
+  const [text, setText] = useDraft(sessionId);
   const [status, setStatus] = useState<{ ok: boolean; msg: string } | null>(null);
   const [sending, setSending] = useState(false);
   const own = useState<File[]>([]);

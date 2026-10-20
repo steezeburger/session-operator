@@ -23,6 +23,8 @@ export interface Session {
   blockedOn: string | null;
   /** Shortcut cards and PRs this session is about, with their titles. */
   refs: Ref[];
+  /** URL prefixes a card or issue number is appended to, so any mention can link out. */
+  refLinks: RefLinks;
   status: SessionStatus;
   statusDetail: string;
   /** "operator" for the session started with `sop operator`, which runs the others. */
@@ -30,6 +32,11 @@ export interface Session {
   /** How the transcript's last turn ended, whatever the status says now. Null for hook-only sessions. */
   turnEnd: "finished" | "mid-turn" | "failing" | null;
   lastActivity: string;
+}
+
+export interface RefLinks {
+  shortcut: string | null;
+  github: string | null;
 }
 
 export interface Ref {

@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import type { Ref } from "./types.ts";
+import type { Ref, RefLinks } from "./types.ts";
 
 const run = promisify(execFile);
 
@@ -117,6 +117,33 @@ const github: Tracker = {
 };
 
 const TRACKERS = [shortcut, github];
+
+// The workspace slug in Shortcut's app URLs, fetched once.
+let slugPromise: Promise<string | null> | null = null;
+function shortcutSlug(): Promise<string | null> {
+  const token = process.env.SHORTCUT_API_TOKEN;
+  if (!token) return Promise.resolve(null);
+  slugPromise ??= fetch(`${SHORTCUT_API}/member`, { headers: { "Shortcut-Token": token } })
+    .then(async (res) => ((await res.json()) as { workspace2?: { url_slug?: string } }).workspace2?.url_slug ?? null)
+    .then((slug) => {
+      if (!slug) slugPromise = null;
+      return slug;
+    })
+    .catch(() => {
+      slugPromise = null;
+      return null;
+    });
+  return slugPromise;
+}
+
+/** Where a bare sc-123 or #123 in this session's text points. GitHub sends issue URLs on to the PR. */
+export async function refLinks(cwd: string): Promise<RefLinks> {
+  const [repo, slug] = await Promise.all([githubRepo(cwd), shortcutSlug()]);
+  return {
+    shortcut: slug && `https://app.shortcut.com/${slug}/story/`,
+    github: repo && `https://github.com/${repo}/issues/`,
+  };
+}
 
 /** Tallies tracker mentions in one message into counts keyed "<tracker>:<id>". */
 export function countMentions(text: string, counts: Map<string, number>) {

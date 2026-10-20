@@ -75,25 +75,54 @@ export function RefList({ refs, className = "" }: { refs: Ref[]; className?: str
   );
 }
 
-// Card/issue/PR mentions inside Claude's text, matched to a known ref so hovering shows its title.
+// Card/issue/PR mentions inside Claude's text. A known ref links to its own URL with its
+// title on hover; an unlooked-up sc-123 or PR #123 links to the session's tracker prefix.
 const MENTION_RE = /(\bsc-\d{2,6}\b|\bPR\s*#?\d{3,6}\b|(?<![\w/])#\d{3,6}\b)/gi;
 
-export function WithMentions({ text, refs }: { text: string; refs: Ref[] }) {
-  if (refs.length === 0) return <>{text}</>;
+export function WithMentions({ text, s }: { text: string; s: Pick<Session, "refs" | "refLinks"> }) {
   return (
     <>
       {text.split(MENTION_RE).map((part, i) => {
+        if (i % 2 === 0) return part;
         const n = Number(part.match(/\d+$/)?.[0]);
         const tracker = /^sc-/i.test(part) ? "shortcut" : "github";
-        const ref = i % 2 === 1 ? refs.find((r) => r.tracker === tracker && r.id === n) : undefined;
-        return ref ? (
-          <abbr key={i} title={ref.title} className="cursor-help no-underline decoration-dotted underline-offset-4 [text-decoration-line:underline]">
+        const ref = s.refs.find((r) => r.tracker === tracker && r.id === n);
+        // A bare #123 could be anything (a list item, a color, another repo), so it only
+        // links once it resolved to a real issue or PR. sc-123 and PR #123 say what they are.
+        const guess = !part.startsWith("#") && s.refLinks[tracker];
+        const href = ref?.url ?? (guess ? `${guess}${n}` : null);
+        return href ? (
+          <a
+            key={i}
+            href={href}
+            target="_blank"
+            rel="noreferrer"
+            title={ref?.title}
+            onClick={(e) => e.stopPropagation()}
+            className="underline decoration-code-dim decoration-dotted underline-offset-4 hover:decoration-code"
+          >
             {part}
-          </abbr>
+          </a>
         ) : (
-          <span key={i}>{part}</span>
+          part
         );
       })}
     </>
+  );
+}
+
+/** A ref's label as a link, for places that list refs inline. */
+export function RefLink({ r }: { r: Ref }) {
+  return (
+    <a
+      href={r.url}
+      target="_blank"
+      rel="noreferrer"
+      title={r.title}
+      onClick={(e) => e.stopPropagation()}
+      className="underline decoration-code-dim decoration-dotted underline-offset-4 hover:decoration-code"
+    >
+      {refLabel(r)}
+    </a>
   );
 }

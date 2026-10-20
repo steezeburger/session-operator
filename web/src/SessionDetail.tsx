@@ -1,6 +1,6 @@
 import { type CSSProperties, type PointerEvent as ReactPointerEvent, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { FeedItem, Session } from "../../server/types.ts";
-import { closedOutcome, focusRefs, RefList } from "./Refs.tsx";
+import { closedOutcome, focusRefs, RefList, WithMentions } from "./Refs.tsx";
 import { imageFiles, ReplyBox } from "./ReplyBox.tsx";
 
 const KIND_STYLE: Record<FeedItem["kind"], { label: string; cls: string }> = {
@@ -25,7 +25,7 @@ function savedWidth() {
 
 const URL_RE = /(https?:\/\/[^\s<>"'`)\]]+[^\s<>"'`)\].,;:!?])/g;
 
-function Linkified({ text }: { text: string }) {
+function Linkified({ text, session }: { text: string; session: Session }) {
   return (
     <>
       {text.split(URL_RE).map((part, i) =>
@@ -34,7 +34,7 @@ function Linkified({ text }: { text: string }) {
             {part}
           </a>
         ) : (
-          part
+          <WithMentions key={i} text={part} s={session} />
         ),
       )}
     </>
@@ -231,7 +231,7 @@ export function SessionDetail({ session, onClose }: { session: Session; onClose:
                   {k.label} {time(item.at)}
                 </div>
                 <div className="whitespace-pre-wrap break-words">
-                  <Linkified text={item.text} />
+                  <Linkified text={item.text} session={session} />
                 </div>
               </div>
             );
