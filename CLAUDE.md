@@ -25,8 +25,8 @@ runs the others. Hono server on 127.0.0.1:4477, React + Tailwind v4 web app (Mat
 ## Wiring
 
 - Hooks live in `~/.claude/settings.json` (SessionEnd, PermissionRequest, Notification, Stop,
-  UserPromptSubmit), all pointing at `bin/operator-hook`. PermissionRequest sets
-  `OPERATOR_TIMEOUT_MS=30000`.
+  UserPromptSubmit), all pointing at `bin/operator-hook`. Approvals wait on the deck for up to
+  an hour; the terminal shows the same prompt meanwhile, and answering either one wins.
 - `sop` is symlinked into `~/.local/bin`. Not `op`, that's 1Password.
 - Env: `OPERATOR_URL`, `OPERATOR_PORT`, `OPERATOR_ROLE` (set by `sop operator`),
   `OPERATOR_NUDGES=0` and `OPERATOR_NOTIFY=0` to turn those off.

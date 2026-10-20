@@ -12,12 +12,12 @@ import { streamSSE } from "hono/streaming";
 import { nextActionFor } from "./next-action.ts";
 import { refLinks, refsFor } from "./refs.ts";
 import { closeSession, liveSessions, sendReply } from "./reply.ts";
-import { fullReplies, mentionCounts, questionAnsweredSince, readFeed, scanSessions } from "./sessions.ts";
-import type { Behavior, OperatorState, PendingDecision, Session, SessionStatus } from "./types.ts";
+import { fullReplies, mentionCounts, readFeed, scanSessions, toolResolvedSince } from "./sessions.ts";
+import type { Behavior, OperatorState, PendingDecision, PermissionUpdate, Session, SessionStatus } from "./types.ts";
 
 const PORT = Number(process.env.OPERATOR_PORT ?? 4477);
 const HOST = "127.0.0.1";
-const DEFAULT_TIMEOUT_MS = 120_000;
+const DEFAULT_TIMEOUT_MS = 3_600_000;
 const WAIT_SLICE_MS = 25_000;
 
 interface Decision {
@@ -25,6 +25,7 @@ interface Decision {
   message?: string;
   /** Replaces the tool's input on allow. AskUserQuestion takes its answers this way. */
   updatedInput?: Record<string, unknown>;
+  updatedPermissions?: PermissionUpdate[];
 }
 
 interface PendingEntry extends PendingDecision {
@@ -104,6 +105,23 @@ function summarize(toolName: string, input: unknown): string {
   return json.length > 300 ? `${json.slice(0, 299)}…` : json || toolName;
 }
 
+// The terminal's one-line "what this is for": a Bash description, a Read's line range.
+function detailOf(input: unknown): string | null {
+  const i = (input ?? {}) as Record<string, unknown>;
+  if (str(i.description)) return str(i.description) ?? null;
+  const from = Number(i.offset);
+  const n = Number(i.limit);
+  if (from > 0 && n > 0) return `lines ${from}-${from + n - 1}`;
+  if (from > 0) return `from line ${from}`;
+  return null;
+}
+
+// Every `say "x"` / `type "x"` / `reply "x"` the message offers, short enough to be a reply.
+function saysIn(text: string): string[] {
+  const all = [...text.matchAll(/\b(?:say|type|reply(?: with)?)\s+["“]([^"”\n]{1,60})["”]/gi)];
+  return [...new Set(all.map((m) => m[1]?.trim()).filter((x): x is string => !!x))];
+}
+
 function projectName(cwd: string | undefined) {
   return cwd ? (cwd.split("/").filter(Boolean).pop() ?? cwd) : "unknown";
 }
@@ -121,7 +139,7 @@ function dropPendingFor(sessionId: string) {
 }
 
 // A card is only worth showing while a hook is waiting on it. Past its deadline the hook
-// has let go, and a question answered in the terminal needs nothing from the deck.
+// has let go, and a question or approval answered in the terminal needs nothing from the deck.
 async function dropStale() {
   const now = Date.now();
   await Promise.all(
@@ -130,7 +148,7 @@ async function dropStale() {
       .map(async (e) => {
         const stale =
           now > new Date(e.expiresAt).getTime() ||
-          (e.toolName === "AskUserQuestion" && (await questionAnsweredSince(e.sessionId, new Date(e.createdAt).getTime())));
+          (await toolResolvedSince(e.sessionId, e.toolName, new Date(e.createdAt).getTime()));
         if (stale) dropEntry(e);
       }),
   );
@@ -162,7 +180,7 @@ async function buildState(): Promise<OperatorState> {
         lastReply: null,
         nextAction: null,
         nextUrl: null,
-        nextSay: null,
+        nextSays: [],
         nextLoading: false,
         live: false,
         blockedOn: null,
@@ -194,6 +212,16 @@ async function buildState(): Promise<OperatorState> {
     s.statusDetail = "Closed";
   }
 
+  // A permission notification can land after the turn already ended, with nothing actually
+  // prompting. A real prompt leaves a tool call open, so a finished turn is just your move.
+  // (Pending decisions put "waiting" back below.)
+  for (const s of byId.values()) {
+    if (s.status === "waiting" && s.turnEnd === "finished") {
+      s.status = "done";
+      s.statusDetail = "Finished its turn, your move";
+    }
+  }
+
   // "Your move" sessions get a specific next step from Haiku; the regex guess stays as fallback.
   for (const s of byId.values()) {
     const text = fullReplies.get(s.id);
@@ -215,13 +243,15 @@ async function buildState(): Promise<OperatorState> {
       }
       continue;
     }
+    // Each quoted `say "go"` in the message is a quick reply, whatever the model makes of it.
+    s.nextSays = saysIn(text);
     if (ai === undefined) s.nextLoading = s.nextAction === null;
     else if (ai) {
       // Claude's own "Next:" line is the step, verbatim. Haiku only fills in when there isn't one.
       const explicit = /\bNext:/i.test(text) ? s.nextAction : null;
       s.nextAction = explicit ?? ai.action;
       s.nextUrl = ai.url;
-      s.nextSay = ai.say && !s.nextAction.includes(ai.say) ? ai.say : null;
+      if (ai.say && !s.nextSays.includes(ai.say)) s.nextSays.push(ai.say);
       if (ai.blockedOn) {
         s.status = "blocked";
         s.blockedOn = ai.blockedOn;
@@ -351,6 +381,8 @@ app.post("/api/hook", async (c) => {
         toolName,
         summary: summarize(toolName, body.tool_input),
         toolInput: body.tool_input ?? null,
+        detail: detailOf(body.tool_input),
+        suggestions: Array.isArray(body.permission_suggestions) ? (body.permission_suggestions as PermissionUpdate[]) : [],
         createdAt: new Date(now).toISOString(),
         expiresAt: new Date(now + timeoutMs).toISOString(),
         waiters: new Set(),
@@ -427,6 +459,8 @@ app.post("/api/decisions/:id", async (c) => {
     return c.json({ error: "behavior must be allow or deny" }, 400);
   }
   entry.decision = { behavior: body.behavior, message: str(body.message) };
+  const suggestion = typeof body.suggestion === "number" ? entry.suggestions[body.suggestion] : undefined;
+  if (body.behavior === "allow" && suggestion) entry.decision.updatedPermissions = [suggestion];
   // Picked answers to an AskUserQuestion: question text -> chosen label(s), comma-joined.
   if (body.behavior === "allow" && entry.toolName === "AskUserQuestion" && body.answers && typeof body.answers === "object") {
     const answers = Object.fromEntries(

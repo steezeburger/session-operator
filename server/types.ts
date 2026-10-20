@@ -13,8 +13,8 @@ export interface Session {
   nextAction: string | null;
   /** Link to open for the next action (only links found in the message or built from its PR numbers). */
   nextUrl: string | null;
-  /** Exact text Claude asked the user to type back. */
-  nextSay: string | null;
+  /** Exact replies Claude offered the user to type back, in the order it offered them. */
+  nextSays: string[];
   /** True while the next action is still being worked out. */
   nextLoading: boolean;
   /** A Claude process for this session is running, so the operator can type a reply into it. */
@@ -62,8 +62,22 @@ export interface PendingDecision {
   toolName: string;
   summary: string;
   toolInput: unknown;
+  /** What the call is for: a Bash command's description, a Read's line range. */
+  detail: string | null;
+  /** Claude Code's suggested rules for "Yes, and don't ask again", sent back as-is on allow. */
+  suggestions: PermissionUpdate[];
   createdAt: string;
   expiresAt: string;
+}
+
+/** One of Claude Code's permission updates (addRules, setMode, addDirectories, ...). */
+export interface PermissionUpdate {
+  type: string;
+  rules?: { toolName: string; ruleContent?: string }[];
+  behavior?: string;
+  mode?: string;
+  directories?: string[];
+  destination?: string;
 }
 
 export interface OperatorState {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import type { Behavior, OperatorState, PendingDecision, Session, SessionStatus } from "../../server/types.ts";
+import type { Behavior, OperatorState, PendingDecision, PermissionUpdate, Session, SessionStatus } from "../../server/types.ts";
 import { MatrixRain } from "./MatrixRain.tsx";
 import { closedOutcome, focusRefs, RefLink, RefList, WithMentions } from "./Refs.tsx";
 import { ReplyBox } from "./ReplyBox.tsx";
@@ -159,31 +159,56 @@ function QuestionForm({ questions, onAnswer }: { questions: Question[]; onAnswer
   );
 }
 
+/** What the terminal's "Yes, and don't ask again ..." option says for one suggested rule. */
+function suggestionLabel(u: PermissionUpdate): string {
+  const where =
+    u.destination === "session"
+      ? " this session"
+      : u.destination === "localSettings" || u.destination === "projectSettings"
+        ? " in this project"
+        : u.destination === "userSettings"
+          ? " anywhere"
+          : "";
+  if (u.type === "addRules" && u.rules?.length) {
+    const rules = u.rules.map((x) => (x.ruleContent ? `${x.toolName}(${x.ruleContent})` : x.toolName)).join(", ");
+    return `don't ask again for ${rules}${where}`;
+  }
+  if (u.type === "setMode" && u.mode) return `switch to ${u.mode} mode${where}`;
+  if (u.type === "addDirectories" && u.directories?.length) return `allow ${u.directories.join(", ")}${where}`;
+  return u.type;
+}
+
+export type DecideExtra = { answers?: Record<string, string>; suggestion?: number };
+
+// `inline`: drawn inside its session's card, which already says which session it is.
 function PendingCard({
   p,
   now,
+  inline = false,
   onDecide,
 }: {
   p: PendingDecision;
   now: number;
-  onDecide: (b: Behavior, answers?: Record<string, string>) => void;
+  inline?: boolean;
+  onDecide: (b: Behavior, extra?: DecideExtra) => void;
 }) {
-  const left = Math.max(0, Math.round((new Date(p.expiresAt).getTime() - now) / 1000));
+  const waited = Math.max(0, Math.round((now - new Date(p.createdAt).getTime()) / 1000));
   const questions = p.toolName === "AskUserQuestion" ? ((p.toolInput as { questions?: Question[] } | null)?.questions ?? null) : null;
   const input = JSON.stringify(p.toolInput, null, 2);
   const project = p.cwd.split("/").filter(Boolean).pop() ?? p.cwd;
   return (
-    <article className="glow-needs flex border border-needs bg-black/85">
-      <div className="w-2 shrink-0 bg-needs pulse" />
+    <article className={`flex border border-needs bg-black/85 ${inline ? "mt-2" : "glow-needs"}`}>
+      {!inline && <div className="w-2 shrink-0 bg-needs pulse" />}
       <div className="min-w-0 flex-1 p-2">
         <div className="flex items-baseline justify-between gap-4 text-xs uppercase text-needs [text-shadow:0_0_4px_rgb(255_176_0/0.6)]">
           <span className="font-bold">
-            {project} → {p.toolName}
+            {inline ? p.toolName : `${project} → ${p.toolName}`}
           </span>
-          <span>{questions ? `also in its terminal · ${Math.ceil(left / 60)}m left here` : `terminal fallback ${left}s`}</span>
+          <span>also in its terminal · {waited < 60 ? `${waited}s` : `${Math.round(waited / 60)}m`}</span>
         </div>
+        {p.detail && <p className="mt-1 text-sm text-white">{p.detail}</p>}
         {questions ? (
-          <QuestionForm questions={questions} onAnswer={(answers) => onDecide("allow", answers)} />
+          <QuestionForm questions={questions} onAnswer={(answers) => onDecide("allow", { answers })} />
         ) : (
           <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all border border-code-dark bg-code-dark/40 px-2 py-1 text-xs">
             {p.summary}
@@ -195,7 +220,7 @@ function PendingCard({
             <pre className={`${BORDER} mt-1 max-h-64 overflow-auto p-2`}>{input}</pre>
           </details>
         )}
-        <div className="mt-2 flex items-center gap-2">
+        <div className="mt-2 flex flex-wrap items-center gap-2">
           {!questions && <button
             type="button"
             onClick={() => onDecide("allow")}
@@ -203,6 +228,18 @@ function PendingCard({
           >
             Approve
           </button>}
+          {!questions &&
+            p.suggestions.map((u, i) => (
+              <button
+                key={i}
+                type="button"
+                onClick={() => onDecide("allow", { suggestion: i })}
+                title={JSON.stringify(u)}
+                className="max-w-full truncate border border-code px-3 py-1 text-left text-sm font-bold text-code hover:bg-code hover:text-black hover:[text-shadow:none]"
+              >
+                Yes, {suggestionLabel(u)}
+              </button>
+            ))}
           <button
             type="button"
             onClick={() => onDecide("deny")}
@@ -210,7 +247,7 @@ function PendingCard({
           >
             {questions ? "Skip" : "Deny"}
           </button>
-          <span className="ml-2 truncate text-xs text-code-dim">{p.cwd}</span>
+          {!inline && <span className="ml-2 truncate text-xs text-code-dim">{p.cwd}</span>}
         </div>
       </div>
     </article>
@@ -284,7 +321,7 @@ function OperatorConsole({
   pending: PendingDecision[];
   tally: { title: string; count: number; color: string }[];
   onOpen: () => void;
-  onDecide: (id: string, b: Behavior, answers?: Record<string, string>) => void;
+  onDecide: (id: string, b: Behavior, extra?: DecideExtra) => void;
 }) {
   const waiting = s.status === "waiting" || pending.length > 0;
   const busy = s.status === "working";
@@ -341,16 +378,14 @@ function OperatorConsole({
             ))}
           </div>
         )}
-        {pending.length === 0 && <ReplyBox sessionId={s.id} say={s.nextSay} placeholder="tell the operator (shift+enter for a new line)" />}
+        {pending.length === 0 && <ReplyBox sessionId={s.id} says={s.nextSays} placeholder="tell the operator (shift+enter for a new line)" />}
       </div>
     </article>
   );
 }
 
 // One imperative line per "needs you" session: what the user does next, not what Claude did.
-function nextStep(s: Session, pending: PendingDecision | undefined): string {
-  if (pending?.toolName === "AskUserQuestion") return `Answer above: ${pending.summary.split("\n")[0]}`;
-  if (pending) return `Approve or deny ${pending.toolName} above: ${pending.summary}`;
+function nextStep(s: Session): string {
   if (s.status === "waiting") return `In its terminal: ${s.statusDetail}`;
   if (s.nextAction) return s.nextAction;
   return s.nextLoading ? "" : "No clear ask - open it to see the last message";
@@ -378,8 +413,15 @@ function NeedsYouCard({
   now,
   pending,
   onOpen,
-}: { s: Session; now: number; pending: PendingDecision | undefined; onOpen: () => void }) {
-  const action = nextStep(s, pending);
+  onDecide,
+}: {
+  s: Session;
+  now: number;
+  pending: PendingDecision[];
+  onOpen: () => void;
+  onDecide: (id: string, b: Behavior, extra?: DecideExtra) => void;
+}) {
+  const action = nextStep(s);
   const focus = focusRefs(s);
   return (
     <article
@@ -399,10 +441,19 @@ function NeedsYouCard({
           <span className="shrink-0 text-code-dim">{ago(s.lastActivity, now)} ago</span>
         </div>
         <RefList refs={focus.own} className="mt-1" />
-        <p className="mt-1 text-lg font-bold text-needs [text-shadow:0_0_6px_rgb(255_176_0/0.7)]">
-          {"→ "}
-          {action ? <WithCode text={action} s={s} /> : <span className="cursor text-code-dim">decoding next step</span>}
-        </p>
+        {pending.length > 0 ? (
+          // Its approvals and questions are the next step, answerable right here.
+          <div onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+            {pending.map((p) => (
+              <PendingCard key={p.id} p={p} now={now} inline onDecide={(b, x) => onDecide(p.id, b, x)} />
+            ))}
+          </div>
+        ) : (
+          <p className="mt-1 text-lg font-bold text-needs [text-shadow:0_0_6px_rgb(255_176_0/0.7)]">
+            {"→ "}
+            {action ? <WithCode text={action} s={s} /> : <span className="cursor text-code-dim">decoding next step</span>}
+          </p>
+        )}
         {s.nextUrl && (
           <div className="mt-1 flex flex-wrap items-center gap-2 text-sm">
             {s.nextUrl && (
@@ -423,7 +474,7 @@ function NeedsYouCard({
             claude: {s.lastReply}
           </p>
         )}
-        {s.live && !pending && <ReplyBox sessionId={s.id} say={s.nextSay} />}
+        {s.live && pending.length === 0 && <ReplyBox sessionId={s.id} says={s.nextSays} />}
       </div>
     </article>
   );
@@ -445,11 +496,11 @@ export function App() {
   const [openId, setOpenId] = useState<string | null>(null);
   const close = useCallback(() => setOpenId(null), []);
 
-  const decide = async (id: string, behavior: Behavior, answers?: Record<string, string>) => {
+  const decide = async (id: string, behavior: Behavior, extra?: DecideExtra) => {
     await fetch(`/api/decisions/${id}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ behavior, answers }),
+      body: JSON.stringify({ behavior, ...extra }),
     });
     void refresh();
   };
@@ -462,9 +513,10 @@ export function App() {
   const closed = sessions.filter((s) => s.status === "closed");
   const pending = state?.pending ?? [];
   const operatorIds = new Set(operators.map((s) => s.id));
-  const approvals = pending.filter((p) => !operatorIds.has(p.sessionId));
+  // Approvals show inside their session's card. Only one whose session isn't listed gets its own.
+  const approvals = pending.filter((p) => !operatorIds.has(p.sessionId) && !sessions.some((s) => s.id === p.sessionId));
   const openSession = all.find((s) => s.id === openId);
-  const pendingBySession = new Map(pending.map((p) => [p.sessionId, p]));
+  const pendingFor = (id: string) => pending.filter((p) => p.sessionId === id);
   const groups = GROUPS.map((g) => ({ ...g, rows: sessions.filter((s) => g.statuses.includes(s.status)) }));
   const nothingActive = state && approvals.length === 0 && groups.every((g) => g.rows.length === 0);
 
@@ -521,8 +573,9 @@ export function App() {
                     key={s.id}
                     s={s}
                     now={now}
-                    pending={pendingBySession.get(s.id)}
+                    pending={pendingFor(s.id)}
                     onOpen={() => setOpenId(s.id)}
+                    onDecide={(id, b, x) => void decide(id, b, x)}
                   />
                 ))}
               </div>

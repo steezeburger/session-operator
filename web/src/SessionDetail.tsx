@@ -287,7 +287,7 @@ export function SessionDetail({ session, onClose, decisions = [] }: { session: S
           {decisions.length > 0 ? (
             <div className="max-h-[60vh] space-y-2 overflow-y-auto">{decisions}</div>
           ) : session.live ? (
-            <ReplyBox sessionId={session.id} say={session.nextSay} autoFocus images={images} onSent={jumpToBottom} />
+            <ReplyBox sessionId={session.id} says={session.nextSays} autoFocus images={images} onSent={jumpToBottom} />
           ) : (
             <p className="text-xs text-code-dim">not running - can't reply from here</p>
           )}
