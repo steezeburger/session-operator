@@ -10,7 +10,7 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { nextActionFor } from "./next-action.ts";
-import { refsFor } from "./refs.ts";
+import { refLinks, refsFor } from "./refs.ts";
 import { closeSession, liveSessions, sendReply } from "./reply.ts";
 import { fullReplies, mentionCounts, questionAnsweredSince, readFeed, scanSessions } from "./sessions.ts";
 import type { Behavior, OperatorState, PendingDecision, Session, SessionStatus } from "./types.ts";
@@ -167,6 +167,7 @@ async function buildState(): Promise<OperatorState> {
         live: false,
         blockedOn: null,
         refs: [],
+        refLinks: { shortcut: null, github: null },
         status: hs.status,
         statusDetail: hs.detail,
         turnEnd: null,
@@ -229,11 +230,11 @@ async function buildState(): Promise<OperatorState> {
   }
 
   await Promise.all(
-    [...byId.values()]
-      .filter((s) => s.status !== "idle" && s.role !== "operator")
-      .map(async (s) => {
-        s.refs = await refsFor(s.cwd, s.branch, mentionCounts.get(s.id) ?? new Map(), changed);
-      }),
+    [...byId.values()].map(async (s) => {
+      s.refLinks = await refLinks(s.cwd);
+      if (s.status === "idle" || s.role === "operator") return;
+      s.refs = await refsFor(s.cwd, s.branch, mentionCounts.get(s.id) ?? new Map(), changed);
+    }),
   );
 
   await dropStale();
