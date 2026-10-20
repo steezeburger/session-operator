@@ -1,5 +1,5 @@
 import { type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { FeedItem, Session } from "../../server/types.ts";
+import type { CleanupItem, CleanupResult, FeedItem, Session } from "../../server/types.ts";
 import { closedOutcome, focusRefs, RefList, WithMentions } from "./Refs.tsx";
 import { imageFiles, ReplyBox } from "./ReplyBox.tsx";
 
@@ -178,7 +178,7 @@ export function SessionDetail({ session, onClose, decisions = [] }: { session: S
           e.stopPropagation();
           // Any click in the panel goes to the reply input, except on controls or while
           // selecting text to copy.
-          if ((e.target as Element).closest("a, button, input, textarea, summary, details, [data-resize]")) return;
+          if ((e.target as Element).closest("a, button, input, label, textarea, summary, details, [data-resize]")) return;
           if (window.getSelection()?.toString()) return;
           e.currentTarget.querySelector<HTMLTextAreaElement>("footer textarea")?.focus();
         }}
@@ -297,17 +297,30 @@ export function SessionDetail({ session, onClose, decisions = [] }: { session: S
   );
 }
 
-// Exits Claude and closes its iTerm tab or tmux pane. First click arms it, second click does it.
+// Exits Claude and closes its iTerm tab or tmux pane. Ending asks first what to clean up: servers it left running, its worktree and branch,
+// its scratch folder. The server exits the session, then does only what's ticked.
 function EndSessionButton({ sessionId, onEnded }: { sessionId: string; onEnded: () => void }) {
-  const [armed, setArmed] = useState(false);
+  const [items, setItems] = useState<CleanupItem[] | null>(null);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [failed, setFailed] = useState<CleanupResult[]>([]);
 
-  useEffect(() => {
-    if (!armed) return;
-    const t = setTimeout(() => setArmed(false), 3000);
-    return () => clearTimeout(t);
-  }, [armed]);
+  const openChecklist = async () => {
+    setOpen(true);
+    setItems(null);
+    setError(null);
+    setFailed([]);
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/cleanup`);
+      const list = res.ok ? ((await res.json()) as CleanupItem[]) : [];
+      setItems(list);
+      setPicked(new Set(list.filter((i) => i.available && i.defaultOn).map((i) => i.id)));
+    } catch {
+      setItems([]);
+    }
+  };
 
   const end = async () => {
     setBusy(true);
@@ -316,32 +329,105 @@ function EndSessionButton({ sessionId, onEnded }: { sessionId: string; onEnded: 
       const res = await fetch(`/api/sessions/${sessionId}/close`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: "{}",
+        body: JSON.stringify({ cleanup: [...picked] }),
       });
-      if (res.ok) return onEnded();
-      setError(((await res.json()) as { error?: string }).error ?? "Close failed");
+      const body = (await res.json()) as { error?: string; results?: CleanupResult[] };
+      if (!res.ok) return setError(body.error ?? "Close failed");
+      const bad = (body.results ?? []).filter((r) => !r.ok);
+      // Ended, but some cleanup didn't happen: say what, and let them close the panel.
+      if (bad.length > 0) return setFailed(bad);
+      onEnded();
     } catch {
       setError("Server unreachable");
     } finally {
       setBusy(false);
-      setArmed(false);
     }
   };
+
+  const toggle = (id: string) =>
+    setPicked((cur) => {
+      const next = new Set(cur);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
 
   return (
     <>
       <button
         type="button"
         disabled={busy}
-        onClick={() => (armed ? void end() : setArmed(true))}
-        title="Exit Claude and close its iTerm tab or tmux pane"
-        className={`border px-2 text-xs uppercase ${
-          armed ? "border-fail bg-fail font-bold text-black [text-shadow:none]" : "border-code-dim text-fail hover:border-fail"
-        }`}
+        onClick={() => (open ? setOpen(false) : void openChecklist())}
+        title="Exit Claude, close its tab or pane, and clean up what it left"
+        className={`border px-2 text-xs uppercase ${open ? "border-fail bg-fail font-bold text-black [text-shadow:none]" : "border-code-dim text-fail hover:border-fail"}`}
       >
-        {busy ? "closing..." : armed ? "sure? end it" : "end session"}
+        end session
       </button>
-      {error && <p className="absolute right-2 top-10 max-w-60 text-right text-xs text-fail">{error}</p>}
+      {open && (
+        <div className="absolute right-2 top-10 z-30 w-[min(32rem,calc(100%-1rem))] border border-fail bg-black p-2 text-left text-xs shadow-lg">
+          {failed.length > 0 ? (
+            <>
+              <p className="font-bold uppercase text-fail">Ended, but some cleanup didn't happen</p>
+              <ul className="mt-1 space-y-1">
+                {failed.map((r) => (
+                  <li key={r.id}>
+                    <span className="text-white">{items?.find((i) => i.id === r.id)?.label ?? r.id}</span>
+                    <span className="block text-fail">{r.error}</span>
+                  </li>
+                ))}
+              </ul>
+              <button type="button" onClick={onEnded} className="mt-2 border border-code-dim px-2 uppercase hover:border-code">
+                ok
+              </button>
+            </>
+          ) : (
+            <>
+              <p className="font-bold uppercase text-fail">End session and clean up</p>
+              {items === null ? (
+                <p className="cursor mt-1 text-code-dim">looking for leftovers</p>
+              ) : items.length === 0 ? (
+                <p className="mt-1 text-code-dim">nothing left behind to clean up</p>
+              ) : (
+                <ul className="mt-1 space-y-1.5">
+                  {items.map((i) => (
+                    <li key={i.id}>
+                      <label className={`flex gap-2 ${i.available ? "cursor-pointer" : "opacity-50"}`}>
+                        <input
+                          type="checkbox"
+                          disabled={!i.available}
+                          checked={picked.has(i.id)}
+                          onChange={() => toggle(i.id)}
+                          className="mt-0.5 accent-[var(--color-code)]"
+                        />
+                        <span className="min-w-0">
+                          <span className="block text-white">{i.label}</span>
+                          <span className="block truncate text-code-dim" title={i.detail}>
+                            {i.detail}
+                          </span>
+                        </span>
+                      </label>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {error && <p className="mt-1 text-fail">{error}</p>}
+              <div className="mt-2 flex gap-2">
+                <button
+                  type="button"
+                  disabled={busy || items === null}
+                  onClick={() => void end()}
+                  className="border border-fail bg-fail px-3 font-bold uppercase text-black [text-shadow:none] hover:bg-black hover:text-fail disabled:opacity-40"
+                >
+                  {busy ? "ending..." : picked.size > 0 ? `end + clean ${picked.size}` : "end session"}
+                </button>
+                <button type="button" onClick={() => setOpen(false)} className="border border-code-dim px-2 uppercase hover:border-code">
+                  cancel
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
     </>
   );
 }

@@ -11,6 +11,7 @@ import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { nextActionFor } from "./next-action.ts";
 import { refLinks, refsFor } from "./refs.ts";
+import { cleanupPlan, runCleanup, sessionTree } from "./cleanup.ts";
 import { closeSession, liveSessions, sendReply } from "./reply.ts";
 import { fullReplies, mentionCounts, readFeed, scanSessions, toolResolvedSince } from "./sessions.ts";
 import type { Behavior, OperatorState, PendingDecision, PermissionUpdate, Session, SessionStatus } from "./types.ts";
@@ -512,17 +513,31 @@ app.post("/api/uploads", async (c) => {
   return c.json({ path });
 });
 
+// What ending this session could clean up, for the checklist behind "end session".
+app.get("/api/sessions/:id/cleanup", async (c) => {
+  const id = c.req.param("id");
+  const items = await cleanupPlan(id, (await liveSessions()).get(id));
+  return items ? c.json(items) : c.text("not found", 404);
+});
+
+// Exits the session, then cleans up the picked items. Cleanup waits for the exit, so nothing
+// is pulled out from under a running Claude; a session that already exited is cleaned up as is.
 app.post("/api/sessions/:id/close", async (c) => {
+  const id = c.req.param("id");
+  const { cleanup } = (await c.req.json().catch(() => ({}))) as { cleanup?: unknown };
+  const picked = Array.isArray(cleanup) ? cleanup.filter((x): x is string => typeof x === "string") : [];
+  const tree = await sessionTree((await liveSessions()).get(id));
   try {
-    const result = await closeSession(c.req.param("id"));
-    if (result === "not-running") return c.json({ error: "That session isn't running anymore" }, 409);
+    const result = await closeSession(id);
+    if (result === "not-running" && picked.length === 0) return c.json({ error: "That session isn't running anymore" }, 409);
     if (result === "no-terminal") return c.json({ error: "Couldn't find its iTerm tab or tmux pane" }, 409);
     if (result === "still-running") return c.json({ error: "Claude is busy - /exit is queued, left it open" }, 409);
   } catch {
     return c.json({ error: "Couldn't type into it - tmux failed, or iTerm needs Automation allowed in System Settings" }, 500);
   }
+  const results = picked.length > 0 ? await runCleanup(id, picked, tree) : [];
   changed();
-  return c.json({ ok: true });
+  return c.json({ ok: true, results });
 });
 
 // The last ?limit= items (default 40); X-Feed-Total says how many there are in all.
