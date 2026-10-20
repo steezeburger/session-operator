@@ -74,11 +74,52 @@ export async function liveSessions(): Promise<Map<string, number>> {
   return live;
 }
 
-export type ReplyResult = "sent" | "not-running" | "not-in-iterm";
+export type ReplyResult = "sent" | "not-running" | "no-terminal";
+
+// Where a Claude process is running: a tmux pane, or an iTerm session found by its tty.
+// tmux goes first. Inside tmux (even tmux in iTerm) Claude's tty is the pane's, so iTerm
+// can't find it anyway.
+type Terminal = { kind: "tmux"; pane: string } | { kind: "iterm"; tty: string };
 
 async function ttyOf(pid: number): Promise<string | null> {
   const tty = (await run("ps", ["-o", "tty=", "-p", String(pid)])).stdout.trim();
   return /^ttys\d+$/.test(tty) ? tty : null;
+}
+
+async function terminalOf(pid: number): Promise<Terminal | null> {
+  const tty = await ttyOf(pid);
+  if (!tty) return null;
+  // Fails when no tmux server is running, which just means it's not in tmux.
+  const panes = await run("tmux", ["list-panes", "-a", "-F", "#{pane_tty} #{pane_id}"]).catch(() => ({ stdout: "" }));
+  for (const line of panes.stdout.split("\n")) {
+    const [paneTty, pane] = line.split(" ");
+    if (paneTty === `/dev/${tty}` && pane) return { kind: "tmux", pane };
+  }
+  return { kind: "iterm", tty };
+}
+
+// Pastes the text into the pane (bracketed, so newlines stay newlines, like iTerm), then
+// presses Enter after the same pause. The text goes in on stdin, never through a shell.
+async function typeIntoTmux(pane: string, text: string): Promise<boolean> {
+  try {
+    const load = run("tmux", ["load-buffer", "-b", "session-operator", "-"], { timeout: 10_000 });
+    load.child.stdin?.end(text);
+    await load;
+    await run("tmux", ["paste-buffer", "-p", "-d", "-b", "session-operator", "-t", pane], { timeout: 10_000 });
+    await new Promise((r) => setTimeout(r, 150));
+    await run("tmux", ["send-keys", "-t", pane, "Enter"], { timeout: 10_000 });
+    return true;
+  } catch (err) {
+    // The pane went away between finding it and typing into it.
+    if (/can't find pane/.test(String((err as { stderr?: string }).stderr))) return false;
+    throw err;
+  }
+}
+
+async function typeInto(term: Terminal, text: string): Promise<boolean> {
+  if (term.kind === "tmux") return typeIntoTmux(term.pane, text);
+  const { stdout } = await run("osascript", ["-e", TYPE_INTO_ITERM, term.tty, text], { timeout: 10_000 });
+  return stdout.trim() === "ok";
 }
 
 function alive(pid: number) {
@@ -93,27 +134,28 @@ function alive(pid: number) {
 export async function sendReply(sessionId: string, text: string): Promise<ReplyResult> {
   const pid = (await liveSessions()).get(sessionId);
   if (!pid) return "not-running";
-  const tty = await ttyOf(pid);
-  if (!tty) return "not-in-iterm";
+  const term = await terminalOf(pid);
+  if (!term) return "no-terminal";
   // iTerm types each \n as a line feed, which Claude Code takes as "new line", not submit.
   const line = text.replace(/\r\n?/g, "\n").trim().slice(0, MAX_REPLY);
-  const { stdout } = await run("osascript", ["-e", TYPE_INTO_ITERM, tty, line], { timeout: 10_000 });
-  return stdout.trim() === "ok" ? "sent" : "not-in-iterm";
+  return (await typeInto(term, line)) ? "sent" : "no-terminal";
 }
 
-export type CloseResult = "closed" | "not-running" | "not-in-iterm" | "still-running";
+export type CloseResult = "closed" | "not-running" | "no-terminal" | "still-running";
 
-// Exits Claude the normal way (/exit, so the transcript is saved), then closes its iTerm tab.
-// If Claude is mid-turn the /exit just queues, so the tab stays open and we say so.
+// Exits Claude the normal way (/exit, so the transcript is saved), then closes its iTerm tab
+// or tmux pane. If Claude is mid-turn the /exit just queues, so it stays open and we say so.
 export async function closeSession(sessionId: string): Promise<CloseResult> {
   const pid = (await liveSessions()).get(sessionId);
   if (!pid) return "not-running";
-  const tty = await ttyOf(pid);
-  if (!tty) return "not-in-iterm";
-  const { stdout } = await run("osascript", ["-e", TYPE_INTO_ITERM, tty, "/exit"], { timeout: 10_000 });
-  if (stdout.trim() !== "ok") return "not-in-iterm";
+  const term = await terminalOf(pid);
+  if (!term) return "no-terminal";
+  if (!(await typeInto(term, "/exit"))) return "no-terminal";
   for (let i = 0; i < 20 && alive(pid); i++) await new Promise((r) => setTimeout(r, 250));
   if (alive(pid)) return "still-running";
-  await run("osascript", ["-e", CLOSE_ITERM_SESSION, tty], { timeout: 10_000 });
+  if (term.kind === "iterm") await run("osascript", ["-e", CLOSE_ITERM_SESSION, term.tty], { timeout: 10_000 });
+  // kill-pane, not kill-window, so other panes in a split survive. A pane that ran claude
+  // directly (sop start) is already gone by now, which is fine.
+  else await run("tmux", ["kill-pane", "-t", term.pane]).catch(() => {});
   return "closed";
 }

@@ -487,9 +487,9 @@ app.post("/api/sessions/:id/reply", async (c) => {
   try {
     const result = await sendReply(c.req.param("id"), text);
     if (result === "not-running") return c.json({ error: "That session isn't running anymore" }, 409);
-    if (result === "not-in-iterm") return c.json({ error: "Couldn't find its iTerm tab" }, 409);
+    if (result === "no-terminal") return c.json({ error: "Couldn't find its iTerm tab or tmux pane" }, 409);
   } catch {
-    return c.json({ error: "iTerm refused - allow Automation for iTerm in System Settings" }, 500);
+    return c.json({ error: "Couldn't type into it - tmux failed, or iTerm needs Automation allowed in System Settings" }, 500);
   }
   return c.json({ ok: true });
 });
@@ -516,10 +516,10 @@ app.post("/api/sessions/:id/close", async (c) => {
   try {
     const result = await closeSession(c.req.param("id"));
     if (result === "not-running") return c.json({ error: "That session isn't running anymore" }, 409);
-    if (result === "not-in-iterm") return c.json({ error: "Couldn't find its iTerm tab" }, 409);
-    if (result === "still-running") return c.json({ error: "Claude is busy - /exit is queued, tab left open" }, 409);
+    if (result === "no-terminal") return c.json({ error: "Couldn't find its iTerm tab or tmux pane" }, 409);
+    if (result === "still-running") return c.json({ error: "Claude is busy - /exit is queued, left it open" }, 409);
   } catch {
-    return c.json({ error: "iTerm refused - allow Automation for iTerm in System Settings" }, 500);
+    return c.json({ error: "Couldn't type into it - tmux failed, or iTerm needs Automation allowed in System Settings" }, 500);
   }
   changed();
   return c.json({ ok: true });

@@ -91,7 +91,7 @@ function Thumb({ file, onRemove }: { file: File; onRemove: () => void }) {
 
 type Images = [File[], Dispatch<SetStateAction<File[]>>];
 
-// Types the reply into the session's iTerm tab and presses Enter. Images (dropped, pasted,
+// Types the reply into the session's iTerm tab or tmux pane and presses Enter. Images (dropped, pasted,
 // or handed in by the parent panel) go first as file paths, which Claude Code attaches.
 export function ReplyBox({
   sessionId,
