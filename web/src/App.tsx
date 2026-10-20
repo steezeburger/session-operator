@@ -556,7 +556,18 @@ export function App() {
         </details>
       )}
 
-      {openSession && <SessionDetail key={openSession.id} session={openSession} onClose={close} />}
+      {openSession && (
+        <SessionDetail
+          key={openSession.id}
+          session={openSession}
+          onClose={close}
+          decisions={pending
+            .filter((p) => p.sessionId === openSession.id)
+            .map((p) => (
+              <PendingCard key={p.id} p={p} now={now} onDecide={(b, a) => void decide(p.id, b, a)} />
+            ))}
+        />
+      )}
     </main>
   );
 }

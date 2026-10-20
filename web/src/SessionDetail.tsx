@@ -1,4 +1,4 @@
-import { type CSSProperties, type PointerEvent as ReactPointerEvent, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { FeedItem, Session } from "../../server/types.ts";
 import { closedOutcome, focusRefs, RefList, WithMentions } from "./Refs.tsx";
 import { imageFiles, ReplyBox } from "./ReplyBox.tsx";
@@ -47,7 +47,9 @@ function time(iso: string | null) {
 
 const FEED_PAGE = 40;
 
-export function SessionDetail({ session, onClose }: { session: Session; onClose: () => void }) {
+// `decisions`: the session's pending approvals and questions, rendered by the deck so they
+// can be answered here too. While there are any, they take the reply box's place.
+export function SessionDetail({ session, onClose, decisions = [] }: { session: Session; onClose: () => void; decisions?: ReactNode[] }) {
   const [feed, setFeed] = useState<FeedItem[] | null>(null);
   const [total, setTotal] = useState(0);
   const [limit, setLimit] = useState(FEED_PAGE);
@@ -282,7 +284,9 @@ export function SessionDetail({ session, onClose }: { session: Session; onClose:
         </div>
 
         <footer className="border-t border-code-dim p-2">
-          {session.live ? (
+          {decisions.length > 0 ? (
+            <div className="max-h-[60vh] space-y-2 overflow-y-auto">{decisions}</div>
+          ) : session.live ? (
             <ReplyBox sessionId={session.id} say={session.nextSay} autoFocus images={images} onSent={jumpToBottom} />
           ) : (
             <p className="text-xs text-code-dim">not running - can't reply from here</p>
