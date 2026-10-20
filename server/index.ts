@@ -41,6 +41,8 @@ interface HookStatus {
 }
 
 const pending = new Map<string, PendingEntry>();
+// Pending requests live in memory, so a restart loses them. Hooks see a new boot id and register again.
+const BOOT = randomUUID();
 const hookStatus = new Map<string, HookStatus>();
 // The tool each session last asked permission for, so a fallback "needs your permission"
 // notification can say what it's really about.
@@ -373,7 +375,8 @@ app.post("/api/hook", async (c) => {
     case "PermissionRequest": {
       const toolName = str(body.tool_name) ?? "tool";
       const timeoutMs = Number(body.operator_timeout_ms) || DEFAULT_TIMEOUT_MS;
-      const now = Date.now();
+      // A hook re-registering after a restart keeps its original start time.
+      const now = Math.min(Date.now(), Date.parse(str(body.operator_created_at) ?? "") || Infinity);
       const entry: PendingEntry = {
         id: randomUUID(),
         sessionId,
@@ -384,14 +387,14 @@ app.post("/api/hook", async (c) => {
         detail: detailOf(body.tool_input),
         suggestions: Array.isArray(body.permission_suggestions) ? (body.permission_suggestions as PermissionUpdate[]) : [],
         createdAt: new Date(now).toISOString(),
-        expiresAt: new Date(now + timeoutMs).toISOString(),
+        expiresAt: new Date(Date.now() + timeoutMs).toISOString(),
         waiters: new Set(),
       };
       pending.set(entry.id, entry);
       lastAsk.set(sessionId, toolName);
-      notify(`${project} needs approval`, `${toolName}: ${entry.summary}`);
+      if (Date.now() - now < 5000) notify(`${project} needs approval`, `${toolName}: ${entry.summary}`);
       changed();
-      return c.json({ id: entry.id });
+      return c.json({ id: entry.id, boot: BOOT });
     }
     case "Notification": {
       const type = str(body.notification_type);
@@ -434,7 +437,7 @@ app.post("/api/hook", async (c) => {
 // Long-poll: resolves when decided, expired, or after one slice (hook loops).
 app.get("/api/decisions/:id/wait", async (c) => {
   const entry = pending.get(c.req.param("id"));
-  if (!entry) return c.json({ status: "gone" });
+  if (!entry) return c.json({ status: "gone", boot: BOOT });
   if (!entry.decision) {
     await new Promise<void>((resolve) => {
       const done = () => {
@@ -446,7 +449,7 @@ app.get("/api/decisions/:id/wait", async (c) => {
       entry.waiters.add(done);
     });
   }
-  if (!entry.decision) return c.json({ status: pending.has(entry.id) ? "pending" : "gone" });
+  if (!entry.decision) return c.json({ status: pending.has(entry.id) ? "pending" : "gone", boot: BOOT });
   pending.delete(entry.id);
   return c.json({ status: "decided", ...entry.decision });
 });
