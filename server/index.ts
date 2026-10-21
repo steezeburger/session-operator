@@ -9,6 +9,7 @@ import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
+import { approvalEffort, keepApprovalEfforts, messageEffort } from "./effort.ts";
 import { nextActionFor } from "./next-action.ts";
 import { mergedInto, refLinks, refsFor, repoName } from "./refs.ts";
 import { cleanupPlan, runCleanup, sessionTree } from "./cleanup.ts";
@@ -217,6 +218,7 @@ async function buildState(): Promise<OperatorState> {
         nextAction: null,
         nextUrl: null,
         nextSays: [],
+        effort: null,
         nextLoading: false,
         live: false,
         blockedOn: null,
@@ -228,6 +230,7 @@ async function buildState(): Promise<OperatorState> {
         turnEnd: null,
         role: null,
         paused: null,
+        startedAt: null,
         lastActivity: new Date(hs.at).toISOString(),
       });
     } else if (hs.at >= new Date(s.lastActivity).getTime()) {
@@ -290,6 +293,7 @@ async function buildState(): Promise<OperatorState> {
       const explicit = /\bNext:/i.test(text) ? s.nextAction : null;
       s.nextAction = explicit ?? ai.action;
       s.nextUrl = ai.url;
+      if (ai.needsUser) s.effort = messageEffort(ai, text, s.cwd, changed);
       if (ai.say && !s.nextSays.includes(ai.say)) s.nextSays.push(ai.say);
       if (ai.blockedOn) {
         s.status = "blocked";
@@ -316,7 +320,11 @@ async function buildState(): Promise<OperatorState> {
   const pendingList = [...pending.values()]
     .filter((p) => !p.decision)
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-    .map(({ waiters: _w, decision: _d, ...rest }) => rest);
+    .map(({ waiters: _w, decision: _d, ...rest }) => ({
+      ...rest,
+      effort: approvalEffort(rest, fullReplies.get(rest.sessionId), changed) ?? null,
+    }));
+  keepApprovalEfforts(new Set(pendingList.map((p) => p.id)));
 
   for (const p of pendingList) {
     const s = byId.get(p.sessionId);
@@ -435,6 +443,7 @@ app.post("/api/hook", async (c) => {
         toolInput: body.tool_input ?? null,
         detail: detailOf(body.tool_input),
         suggestions: Array.isArray(body.permission_suggestions) ? (body.permission_suggestions as PermissionUpdate[]) : [],
+        effort: null,
         createdAt: new Date(now).toISOString(),
         expiresAt: new Date(Date.now() + timeoutMs).toISOString(),
         waiters: new Set(),

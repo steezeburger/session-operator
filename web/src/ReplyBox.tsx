@@ -1,4 +1,4 @@
-import { type Dispatch, type SetStateAction, useEffect, useState, useSyncExternalStore } from "react";
+import { type Dispatch, type SetStateAction, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 
 // Unsent text per session, shared by every reply box for that session, so closing the
 // panel (or a reload) doesn't throw it away.
@@ -99,10 +99,13 @@ export function ReplyBox({
   autoFocus,
   images: lifted,
   onSent,
+  inputId,
   placeholder = "reply to claude (shift+enter for a new line, drop or paste images)",
 }: {
   sessionId: string;
   placeholder?: string;
+  /** Lets a keyboard shortcut find this box's text area. */
+  inputId?: string;
   says?: string[];
   autoFocus?: boolean;
   images?: Images;
@@ -114,6 +117,17 @@ export function ReplyBox({
   const own = useState<File[]>([]);
   const [images, setImages] = lifted ?? own;
   const addImages = (files: File[]) => files.length > 0 && setImages((prev) => [...prev, ...files]);
+
+  // Grows with what's typed, wrapped lines included, up to 40% of the screen; then it scrolls.
+  const box = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    const cap = window.innerHeight * 0.4;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, cap)}px`;
+    el.style.overflowY = el.scrollHeight > cap ? "auto" : "hidden";
+  }, [text]);
 
   const send = async (value: string) => {
     if ((!value.trim() && images.length === 0) || sending) return;
@@ -186,6 +200,8 @@ export function ReplyBox({
         <div className="flex min-w-0 flex-1 items-start border border-code-dim bg-black focus-within:border-code">
           <span className="py-1 pl-2 text-sm text-code-dim">{">"}</span>
           <textarea
+            ref={box}
+            id={inputId}
             value={text}
             onChange={(e) => setText(e.target.value)}
             onPaste={(e) => {
@@ -201,7 +217,7 @@ export function ReplyBox({
                 void send(text);
               }
             }}
-            rows={Math.min(8, text.split("\n").length)}
+            rows={1}
             placeholder={placeholder}
             autoFocus={autoFocus}
             className="min-w-0 flex-1 resize-none bg-transparent px-2 py-1 text-sm text-white caret-code outline-none placeholder:text-code-dark"
@@ -210,12 +226,12 @@ export function ReplyBox({
         <button
           type="submit"
           disabled={sending || (!text.trim() && images.length === 0)}
-          className="shrink-0 border border-code px-3 text-sm font-bold uppercase hover:bg-code hover:text-black hover:[text-shadow:none] disabled:opacity-40"
+          className={`shrink-0 border border-code px-3 text-sm font-bold uppercase hover:bg-code hover:text-black hover:[text-shadow:none] disabled:opacity-40 ${status?.ok ? "disabled:opacity-100" : ""}`}
         >
-          {sending ? "..." : "send"}
+          {sending ? "..." : status?.ok ? "sent ✓" : "send"}
         </button>
       </form>
-      {status && <p className={`mt-1 text-xs ${status.ok ? "text-code" : "text-fail"}`}>{status.msg}</p>}
+      {status && !status.ok && <p className="mt-1 text-xs text-fail">{status.msg}</p>}
     </div>
   );
 }

@@ -58,7 +58,13 @@ function clip(text: string | undefined, max = 160): string | null {
 function clipTail(text: string | undefined, max = 280): string | null {
   if (!text) return null;
   const oneLine = text.replace(/\s+/g, " ").trim();
-  return oneLine.length > max ? `…${oneLine.slice(-(max - 1))}` : oneLine;
+  if (oneLine.length <= max) return oneLine;
+  // Start at a sentence, or at least a word, so it doesn't open mid-word.
+  const cut = oneLine.slice(-(max - 1));
+  const sentence = cut.search(/[.!?:]\s+\S/);
+  if (sentence >= 0 && sentence < max / 2) return `…${cut.slice(sentence + 1).replace(/^[\s>#*-]+/, "")}`;
+  const word = cut.indexOf(" ");
+  return `…${word >= 0 && word < 30 ? cut.slice(word + 1) : cut}`;
 }
 
 function assistantText(r: TranscriptRecord): string | undefined {
@@ -106,16 +112,25 @@ const PROMPTS_KEPT = 20;
 // The /rename title and your recent messages, from the whole transcript once and then only
 // what's appended. Both can sit far before the tail parseTranscript sees: in a long session
 // tool output fills that, and a rename happens whenever.
-const histories = new Map<string, { offset: number; title: string | null; prompts: string[] }>();
-async function history(path: string, size: number): Promise<{ title: string | null; prompts: string[] }> {
+interface History {
+  offset: number;
+  title: string | null;
+  prompts: string[];
+  /** The first record's time, so when the session started. */
+  startedAt: string | null;
+}
+const histories = new Map<string, History>();
+async function history(path: string, size: number): Promise<History> {
   let h = histories.get(path);
-  if (!h || size < h.offset) h = { offset: 0, title: null, prompts: [] };
+  if (!h || size < h.offset) h = { offset: 0, title: null, prompts: [], startedAt: null };
   if (size > h.offset) {
     const text = await readFrom(path, h.offset, size);
     const end = text.lastIndexOf("\n") + 1;
     const prompts = [...h.prompts];
     let title = h.title;
+    let startedAt = h.startedAt;
     for (const line of text.slice(0, end).split("\n")) {
+      startedAt ??= line.match(/"timestamp":"([^"]+)"/)?.[1] ?? null;
       // Skip the parse for everything that can't be a rename or something you typed.
       if (!line.includes('"custom-title"') && !line.includes('"queued_command"') && !line.includes('"type":"user"')) continue;
       try {
@@ -127,7 +142,7 @@ async function history(path: string, size: number): Promise<{ title: string | nu
         // half-written line
       }
     }
-    h = { offset: h.offset + Buffer.byteLength(text.slice(0, end)), title, prompts: prompts.slice(-PROMPTS_KEPT) };
+    h = { offset: h.offset + Buffer.byteLength(text.slice(0, end)), title, prompts: prompts.slice(-PROMPTS_KEPT), startedAt };
   }
   histories.set(path, h);
   return h;
@@ -219,6 +234,7 @@ export function parseTranscript(id: string, text: string, mtime: Date): Session 
     nextAction: extractNextAction(lastReply),
     nextUrl: null,
     nextSays: [],
+    effort: null,
     nextLoading: false,
     live: false,
     blockedOn: null,
@@ -230,6 +246,7 @@ export function parseTranscript(id: string, text: string, mtime: Date): Session 
     role: null,
     turnEnd: apiError || (lastTurn.type === "user" && hasToolError(lastTurn)) ? "failing" : turnEnded ? "finished" : "mid-turn",
     paused: null,
+    startedAt: null,
     lastActivity: lastActivity.toISOString(),
   };
 }
@@ -266,6 +283,7 @@ export async function scanSessions(): Promise<Session[]> {
           const h = await history(path, info.size);
           session.customTitle = clip(h.title ?? undefined, 80) ?? session.customTitle;
           if (h.prompts.length > session.recentPrompts.length) session.recentPrompts = h.prompts;
+          session.startedAt = h.startedAt;
           sessions.push(session);
         }
       } catch {

@@ -27,6 +27,8 @@ export interface Session {
   nextUrl: string | null;
   /** Exact replies Claude offered the user to type back, in the order it offered them. */
   nextSays: string[];
+  /** Roughly how long the user needs to understand and decide the ask. Null until estimated. */
+  effort: Effort | null;
   /** True while the next action is still being worked out. */
   nextLoading: boolean;
   /** A Claude process for this session is running, so the operator can type a reply into it. */
@@ -47,7 +49,16 @@ export interface Session {
   turnEnd: "finished" | "mid-turn" | "failing" | null;
   /** Set while you've put it off: no nudges, no notifications, listed under Paused. */
   paused: Pause | null;
+  /** When the transcript began. Null for hook-only sessions. */
+  startedAt: string | null;
   lastActivity: string;
+}
+
+/** Time to deal with an ask: reading, weighing and deciding, not the click. */
+export interface Effort {
+  minutes: number;
+  /** A few words on what takes the time, e.g. "weigh 3 options", "review 400-line diff". */
+  why: string;
 }
 
 export interface Pause {
@@ -88,6 +99,8 @@ export interface PendingDecision {
   detail: string | null;
   /** Claude Code's suggested rules for "Yes, and don't ask again", sent back as-is on allow. */
   suggestions: PermissionUpdate[];
+  /** Null until the model has looked at it. */
+  effort: Effort | null;
   createdAt: string;
   expiresAt: string;
 }
