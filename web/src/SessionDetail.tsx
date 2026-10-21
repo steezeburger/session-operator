@@ -4,6 +4,7 @@ import { PauseMenu, unpauseSession, untilLabel } from "./Pause.tsx";
 import { WithPaths } from "./Paths.tsx";
 import { closedOutcome, focusRefs, RefList, sessionName } from "./Refs.tsx";
 import { imageFiles, ReplyBox } from "./ReplyBox.tsx";
+import { TermButton } from "./TermButton.tsx";
 
 // Three voices, all Matrix: you in white on a faint panel, Claude in full glowing green on
 // black, and its tool calls folded into dark-green log blocks with the tool names inverted.
@@ -277,12 +278,37 @@ export function SessionDetail({ session, onClose, decisions = [] }: { session: S
           onPointerDown={startResize}
           className="absolute inset-y-0 -left-1 z-10 hidden w-2 cursor-col-resize hover:bg-code/40 md:block"
         />
-        <header className="relative flex items-start justify-between gap-2 border-b border-code-dim p-2">
+        <header className="space-y-1 border-b border-code-dim p-2">
+          <div className="truncate text-sm font-bold">
+            {session.project}
+            {session.branch && <span className="font-normal text-code-dim"> {session.branch}</span>}
+          </div>
+          {/* Its own row, so the buttons never squeeze the branch name. */}
+          <div className="relative flex gap-1">
+            {session.role !== "operator" &&
+              (session.paused ? (
+                <button
+                  type="button"
+                  onClick={() => void unpauseSession(session.id)}
+                  title={`Paused ${untilLabel(session)}. Back to its group, nudges and notifications on`}
+                  className="border border-code px-2 text-xs uppercase hover:bg-code hover:text-black hover:[text-shadow:none]"
+                >
+                  unpause
+                </button>
+              ) : (
+                session.status !== "closed" && <PauseMenu ids={[session.id]} />
+              ))}
+            <TermButton s={session} />
+            {session.live && <EndSessionButton sessionId={session.id} onEnded={onClose} />}
+            <button
+              type="button"
+              onClick={onClose}
+              className="border border-code-dim px-2 text-xs uppercase hover:border-code"
+            >
+              esc
+            </button>
+          </div>
           <div className="min-w-0 text-xs">
-            <div className="truncate text-sm font-bold">
-              {session.project}
-              {session.branch && <span className="font-normal text-code-dim"> {session.branch}</span>}
-            </div>
             {sessionName(session) && <div className="truncate">{sessionName(session)}</div>}
             {session.topic && <div className="truncate text-code-dim">now: {session.topic}</div>}
             <div className="truncate text-code-dark" title="Session id: what sop and the transcript call it">
@@ -301,31 +327,6 @@ export function SessionDetail({ session, onClose, decisions = [] }: { session: S
             <div className="truncate text-code-dim">
               {session.paused && <span className="text-white">paused {untilLabel(session)} · </span>}
               {session.status === "closed" ? closedOutcome(session).text : session.statusDetail} · {session.cwd}
-            </div>
-          </div>
-          <div className="flex shrink-0 flex-col items-end gap-1">
-            <div className="flex gap-1">
-              {session.role !== "operator" &&
-                (session.paused ? (
-                  <button
-                    type="button"
-                    onClick={() => void unpauseSession(session.id)}
-                    title={`Paused ${untilLabel(session)}. Back to its group, nudges and notifications on`}
-                    className="border border-code px-2 text-xs uppercase hover:bg-code hover:text-black hover:[text-shadow:none]"
-                  >
-                    unpause
-                  </button>
-                ) : (
-                  session.status !== "closed" && <PauseMenu ids={[session.id]} />
-                ))}
-              {session.live && <EndSessionButton sessionId={session.id} onEnded={onClose} />}
-              <button
-                type="button"
-                onClick={onClose}
-                className="border border-code-dim px-2 text-xs uppercase hover:border-code"
-              >
-                esc
-              </button>
             </div>
           </div>
         </header>
@@ -457,7 +458,7 @@ function EndSessionButton({ sessionId, onEnded }: { sessionId: string; onEnded: 
         end session
       </button>
       {open && (
-        <div className="absolute right-2 top-10 z-30 w-[min(32rem,calc(100%-1rem))] border border-fail bg-black p-2 text-left text-xs shadow-lg">
+        <div className="absolute left-0 top-full z-30 mt-1 w-[min(32rem,calc(100%-1rem))] border border-fail bg-black p-2 text-left text-xs shadow-lg">
           {failed.length > 0 ? (
             <>
               <p className="font-bold uppercase text-fail">Ended, but some cleanup didn't happen</p>

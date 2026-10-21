@@ -31,6 +31,8 @@ export interface Session {
   nextLoading: boolean;
   /** A Claude process for this session is running, so the operator can type a reply into it. */
   live: boolean;
+  /** Where its live Claude runs: a tmux pane, else a tty taken to be iTerm. Null when not live or no tty. */
+  terminal: "iterm" | "tmux" | null;
   /** What the session is waiting on outside the user (CI, a deploy, a review), when status is "blocked". */
   blockedOn: string | null;
   /** Shortcut cards and PRs this session is about, with their titles. */

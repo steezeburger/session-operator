@@ -5,6 +5,7 @@ import { setFavicon } from "./favicon.ts";
 import { MatrixRain } from "./MatrixRain.tsx";
 import { closedOutcome, focusRefs, RefLink, RefList, sessionMatches, sessionName } from "./Refs.tsx";
 import { PauseMenu, untilLabel } from "./Pause.tsx";
+import { TermButton } from "./TermButton.tsx";
 import { WithPaths } from "./Paths.tsx";
 import { ReplyBox } from "./ReplyBox.tsx";
 import { SessionDetail } from "./SessionDetail.tsx";
@@ -510,7 +511,7 @@ function SessionRow({ s, now, leaving, onOpen }: { s: Session; now: number; leav
       onClick={onOpen}
       onKeyDown={(e) => e.key === "Enter" && onOpen()}
       style={vt(`s-${s.id}`)}
-      className="relative grid w-full cursor-pointer grid-cols-[5.5rem_1fr_2.5rem] items-stretch text-left text-xs leading-tight hover:bg-code-dark/50 md:grid-cols-[5.5rem_15rem_1fr_14rem_2.5rem]"
+      className="group relative grid w-full cursor-pointer grid-cols-[5.5rem_1fr_2.5rem] items-stretch text-left text-xs leading-tight hover:bg-code-dark/50 md:grid-cols-[5.5rem_15rem_1fr_14rem_2.5rem]"
     >
       {/* Paused: its real status, minus the pulse, since you've put it off. */}
       <div className={`px-1.5 py-0.5 font-bold ${s.paused ? style.block.replace("pulse", "opacity-60") : style.block}`}>{style.label}</div>
@@ -540,6 +541,10 @@ function SessionRow({ s, now, leaving, onOpen }: { s: Session; now: number; leav
         {next}
       </div>
       <div className="px-1.5 py-0.5 text-right text-code-dim">{ago(s.lastActivity, now)}</div>
+      {/* Over the row's right end on hover, so the grid keeps its columns. */}
+      <div className="absolute right-12 top-0 hidden group-hover:block">
+        <TermButton s={s} />
+      </div>
       <Leaving to={leaving} />
     </div>
   );
@@ -578,28 +583,31 @@ function OperatorConsole({
     <article className={`${waiting ? "glow-needs border-needs" : "glow-op border-white"} mt-2 flex border bg-black`}>
       <div className={`w-2 shrink-0 ${waiting ? "pulse bg-needs" : busy ? "bg-code" : "bg-white"}`} />
       <div className="min-w-0 flex-1 p-2">
-        <button
-          type="button"
-          onClick={onOpen}
-          className="flex w-full cursor-pointer items-center gap-2 text-left text-xs hover:bg-code-dark/50"
-          title={s.cwd}
-        >
-          <span className={`px-1.5 py-0.5 font-bold ${style?.block ?? "bg-white text-black [text-shadow:none]"}`}>
-            {style?.label ?? "READY"}
-          </span>
-          <span className="font-bold uppercase tracking-widest text-white [text-shadow:0_0_6px_rgb(255_255_255/0.6)]">
-            Operator
-          </span>
-          <span className="ml-auto flex shrink-0 items-center gap-3 text-code-dim">
-            {tally.map((t) => (
-              <span key={t.title} className="hidden items-center gap-1 sm:flex" title={t.title}>
-                <span className={`inline-block h-2 w-2 ${t.color}`} />
-                {t.count} {t.title.toLowerCase()}
-              </span>
-            ))}
-            <span>{ago(s.lastActivity, now)}</span>
-          </span>
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onOpen}
+            className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left text-xs hover:bg-code-dark/50"
+            title={s.cwd}
+          >
+            <span className={`px-1.5 py-0.5 font-bold ${style?.block ?? "bg-white text-black [text-shadow:none]"}`}>
+              {style?.label ?? "READY"}
+            </span>
+            <span className="font-bold uppercase tracking-widest text-white [text-shadow:0_0_6px_rgb(255_255_255/0.6)]">
+              Operator
+            </span>
+            <span className="ml-auto flex shrink-0 items-center gap-3 text-code-dim">
+              {tally.map((t) => (
+                <span key={t.title} className="hidden items-center gap-1 sm:flex" title={t.title}>
+                  <span className={`inline-block h-2 w-2 ${t.color}`} />
+                  {t.count} {t.title.toLowerCase()}
+                </span>
+              ))}
+              <span>{ago(s.lastActivity, now)}</span>
+            </span>
+          </button>
+          <TermButton s={s} />
+        </div>
         {line && (
           <button
             type="button"
@@ -687,6 +695,7 @@ function NeedsYouCard({
           <span className="flex shrink-0 items-baseline gap-2 text-code-dim">
             {ago(s.lastActivity, now)} ago
             <PauseMenu ids={[s.id]} />
+            <TermButton s={s} />
           </span>
         </div>
         <RefList refs={focus.own} className="mt-1" />

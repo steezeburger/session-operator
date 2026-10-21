@@ -221,6 +221,7 @@ export function parseTranscript(id: string, text: string, mtime: Date): Session 
     nextSays: [],
     nextLoading: false,
     live: false,
+    terminal: null,
     blockedOn: null,
     refs: [],
     refLinks: { shortcut: null, github: null },
