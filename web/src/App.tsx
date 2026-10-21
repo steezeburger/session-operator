@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Behavior, OperatorState, PendingDecision, PermissionUpdate, Session, SessionStatus } from "../../server/types.ts";
 import { setFavicon } from "./favicon.ts";
 import { MatrixRain } from "./MatrixRain.tsx";
-import { closedOutcome, focusRefs, RefLink, RefList, WithMentions } from "./Refs.tsx";
+import { closedOutcome, focusRefs, RefLink, RefList, sessionMatches, sessionName, WithMentions } from "./Refs.tsx";
 import { ReplyBox } from "./ReplyBox.tsx";
 import { SessionDetail } from "./SessionDetail.tsx";
 
@@ -292,8 +292,9 @@ function SessionRow({ s, now, onOpen }: { s: Session; now: number; onOpen: () =>
           s.branch && <span className="text-code-dim"> {s.branch}</span>
         )}
       </div>
-      <div className="hidden min-w-0 truncate px-1.5 py-0.5 md:block" title={refs[0]?.title ?? s.lastPrompt ?? undefined}>
-        {refs[0]?.title ?? s.title ?? "-"}
+      <div className="hidden min-w-0 truncate px-1.5 py-0.5 md:block" title={[sessionName(s), s.topic && `now: ${s.topic}`].filter(Boolean).join("\n") || undefined}>
+        {sessionName(s) ?? "-"}
+        {s.topic && <span className="text-code-dim"> · now: {s.topic}</span>}
       </div>
       <div
         className={`hidden truncate px-1.5 py-0.5 font-bold uppercase md:block ${s.status === "blocked" ? "text-blocked [text-shadow:0_0_4px_rgb(0_229_255/0.6)]" : (outcome?.cls ?? "")}`}
@@ -437,7 +438,8 @@ function NeedsYouCard({
           <span className="min-w-0 truncate" title={s.cwd}>
             <span className="font-bold">{repoName(s)}</span>
             {s.branch && <span className="text-code-dim"> {s.branch}</span>}
-            {s.title && <span className="text-code-dim"> · {s.title}</span>}
+            {sessionName(s) && <span className="text-code-dim"> · {sessionName(s)}</span>}
+            {s.topic && <span className="text-code-dim"> · now: {s.topic}</span>}
           </span>
           <span className="shrink-0 text-code-dim">{ago(s.lastActivity, now)} ago</span>
         </div>
@@ -496,6 +498,21 @@ export function App() {
   const now = useNow();
   const [openId, setOpenId] = useState<string | null>(null);
   const close = useCallback(() => setOpenId(null), []);
+  const [query, setQuery] = useState("");
+  const filterBox = useRef<HTMLInputElement>(null);
+
+  // "/" jumps to the filter, like most lists that have one.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const typing = (e.target as Element | null)?.closest?.("input, textarea, [contenteditable]");
+      if (e.key === "/" && !typing && !openId) {
+        e.preventDefault();
+        filterBox.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [openId]);
 
   const decide = async (id: string, behavior: Behavior, extra?: DecideExtra) => {
     await fetch(`/api/decisions/${id}`, {
@@ -509,20 +526,23 @@ export function App() {
   const all = state?.sessions ?? [];
   // The running operator gets its own strip; the rest are the sessions it runs.
   const operators = all.filter((s) => s.role === "operator" && s.live);
-  const sessions = all.filter((s) => !operators.includes(s));
+  const everyone = all.filter((s) => !operators.includes(s));
+  // The filter narrows what's listed; the tab icon and counts still see everyone.
+  const sessions = everyone.filter((s) => sessionMatches(s, query));
   const idle = sessions.filter((s) => s.status === "idle");
   const closed = sessions.filter((s) => s.status === "closed");
   const pending = state?.pending ?? [];
   const operatorIds = new Set(operators.map((s) => s.id));
   // Approvals show inside their session's card. Only one whose session isn't listed gets its own.
-  const approvals = pending.filter((p) => !operatorIds.has(p.sessionId) && !sessions.some((s) => s.id === p.sessionId));
+  const approvals = pending.filter((p) => !operatorIds.has(p.sessionId) && !everyone.some((s) => s.id === p.sessionId));
   const openSession = all.find((s) => s.id === openId);
   const pendingFor = (id: string) => pending.filter((p) => p.sessionId === id);
   const groups = GROUPS.map((g) => ({ ...g, rows: sessions.filter((s) => g.statuses.includes(s.status)) }));
+  const allGroups = GROUPS.map((g) => ({ ...g, rows: everyone.filter((s) => g.statuses.includes(s.status)) }));
   const nothingActive = state && approvals.length === 0 && groups.every((g) => g.rows.length === 0);
   // The tab icon goes amber, and the title counts, while anything waits on you.
   const needsCount =
-    (groups.find((g) => g.key === "needs")?.rows.length ?? 0) +
+    (allGroups.find((g) => g.key === "needs")?.rows.length ?? 0) +
     approvals.length +
     operators.filter((s) => s.status === "waiting" || pending.some((p) => p.sessionId === s.id)).length;
   useEffect(() => setFavicon(needsCount), [needsCount]);
@@ -532,11 +552,26 @@ export function App() {
       <MatrixRain />
       <div className="sticky top-0 z-20 bg-black pb-2 pt-4">
         <header className={`${BORDER} glow flex items-baseline justify-between bg-black/85 px-2 py-1`}>
-          <h1 className="cursor text-sm font-bold uppercase tracking-widest">Session operator</h1>
+          <h1 className="cursor shrink-0 text-sm font-bold uppercase tracking-widest">Session operator</h1>
+          <input
+            ref={filterBox}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key !== "Escape") return;
+              e.stopPropagation();
+              setQuery("");
+              e.currentTarget.blur();
+            }}
+            placeholder="/ filter: name, topic, branch, card, what you said"
+            className="mx-4 min-w-0 flex-1 border-b border-code-dark bg-transparent px-1 text-xs text-white caret-code outline-none placeholder:text-code-dark focus:border-code"
+          />
           {offline ? (
-            <span className="pulse bg-fail px-2 text-xs font-bold uppercase text-black [text-shadow:none]">connection lost</span>
+            <span className="pulse shrink-0 bg-fail px-2 text-xs font-bold uppercase text-black [text-shadow:none]">connection lost</span>
           ) : (
-            <span className="text-xs text-code-dim">{sessions.length} signals in the matrix</span>
+            <span className="shrink-0 text-xs text-code-dim">
+              {query ? `${sessions.length} of ${everyone.length} match` : `${everyone.length} signals in the matrix`}
+            </span>
           )}
         </header>
         {operators.map((s) => (
@@ -545,7 +580,7 @@ export function App() {
             s={s}
             now={now}
             pending={pending.filter((p) => p.sessionId === s.id)}
-            tally={groups.filter((g) => g.rows.length > 0).map((g) => ({ title: g.title, count: g.rows.length, color: g.color }))}
+            tally={allGroups.filter((g) => g.rows.length > 0).map((g) => ({ title: g.title, count: g.rows.length, color: g.color }))}
             onOpen={() => setOpenId(s.id)}
             onDecide={(id, b, a) => void decide(id, b, a)}
           />
@@ -592,8 +627,12 @@ export function App() {
           </section>
         ))}
 
-      {nothingActive && (
-        <p className={`${BORDER} mt-6 border-dashed bg-black/85 p-3 text-center text-sm`}>wake up... nothing is running</p>
+      {query && sessions.length === 0 ? (
+        <p className={`${BORDER} mt-6 border-dashed bg-black/85 p-3 text-center text-sm`}>no session matches "{query}"</p>
+      ) : (
+        nothingActive && !query && (
+          <p className={`${BORDER} mt-6 border-dashed bg-black/85 p-3 text-center text-sm`}>wake up... nothing is running</p>
+        )
       )}
 
       {idle.length > 0 && (

@@ -179,6 +179,9 @@ async function buildState(): Promise<OperatorState> {
         project: projectName(hs.cwd),
         branch: null,
         title: null,
+        customTitle: null,
+        topic: null,
+        recentPrompts: [],
         lastPrompt: null,
         lastReply: null,
         nextAction: null,
@@ -233,6 +236,7 @@ async function buildState(): Promise<OperatorState> {
     const finishedIdle = s.status === "idle" && s.live && s.turnEnd === "finished";
     if (s.role === "operator" || (s.status !== "done" && s.status !== "working" && !finishedIdle) || !text) continue;
     const ai = nextActionFor(s.id, s.cwd, text, changed);
+    s.topic = ai?.topic ?? null;
     // An old finished turn goes idle, unless its last message still asks something of you.
     if (finishedIdle) {
       if (!ai?.needsUser) continue;

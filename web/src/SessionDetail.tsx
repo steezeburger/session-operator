@@ -1,6 +1,6 @@
 import { type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { CleanupItem, CleanupResult, FeedItem, Session } from "../../server/types.ts";
-import { closedOutcome, focusRefs, RefList, WithMentions } from "./Refs.tsx";
+import { closedOutcome, focusRefs, RefList, sessionName, WithMentions } from "./Refs.tsx";
 import { imageFiles, ReplyBox } from "./ReplyBox.tsx";
 
 // Three voices, all Matrix: you in white on a faint panel, Claude in full glowing green on
@@ -281,7 +281,12 @@ export function SessionDetail({ session, onClose, decisions = [] }: { session: S
               {session.project}
               {session.branch && <span className="font-normal text-code-dim"> {session.branch}</span>}
             </div>
-            {session.title && <div className="truncate">{session.title}</div>}
+            {sessionName(session) && <div className="truncate">{sessionName(session)}</div>}
+            {session.topic && <div className="truncate text-code-dim">now: {session.topic}</div>}
+            <div className="truncate text-code-dark" title="Session id: what sop and the transcript call it">
+              {session.id.slice(0, 8)}
+              {session.customTitle && session.title && session.customTitle !== session.title ? ` · started as "${session.title}"` : ""}
+            </div>
             <RefList refs={focus.own} className="my-1" />
             {focus.mentioned.length > 0 && (
               <details className="my-1 text-code-dim">
