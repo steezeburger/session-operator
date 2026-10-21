@@ -7,7 +7,14 @@ export interface Session {
   cwd: string;
   project: string;
   branch: string | null;
+  /** Claude Code's AI title for the session. Set once near the start, never updated. */
   title: string | null;
+  /** The name you gave it with /rename. Wins over the AI title, and only you change it. */
+  customTitle: string | null;
+  /** What it's working on lately, a few words from the next-action model. Changes as it goes. */
+  topic: string | null;
+  /** Your last few messages, newest last, for finding it again with the filter. */
+  recentPrompts: string[];
   lastPrompt: string | null;
   /** Tail of Claude's last message, where the question or ask usually sits. */
   lastReply: string | null;

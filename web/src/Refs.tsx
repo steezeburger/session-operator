@@ -54,6 +54,30 @@ export function closedOutcome(s: Session): { text: string; cls: string } {
 }
 
 
+/**
+ * What to call a session: your /rename if you gave it one (only you change that), else its
+ * card or issue title, else Claude Code's AI title. Fixed, so it's findable later; `topic`
+ * is the part that moves.
+ */
+export function sessionName(s: Session): string | null {
+  return s.customTitle ?? focusRefs(s).own.find((r) => r.kind !== "pr")?.title ?? focusRefs(s).own[0]?.title ?? s.title;
+}
+
+/** True if every word of the filter shows up somewhere in what the session is or was about. */
+export function sessionMatches(s: Session, query: string): boolean {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return true;
+  const hay = [
+    s.id, s.project, s.cwd, s.branch, s.customTitle, s.title, s.topic, s.lastPrompt,
+    ...s.recentPrompts,
+    ...s.refs.flatMap((r) => [r.label, r.title]),
+  ]
+    .filter(Boolean)
+    .join("\n")
+    .toLowerCase();
+  return words.every((w) => hay.includes(w));
+}
+
 export function refLabel(r: Ref) {
   return r.label;
 }

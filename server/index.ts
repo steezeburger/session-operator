@@ -1,9 +1,9 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { mkdir, stat, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
+import { extname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
@@ -180,6 +180,9 @@ async function buildState(): Promise<OperatorState> {
         project: projectName(hs.cwd),
         branch: null,
         title: null,
+        customTitle: null,
+        topic: null,
+        recentPrompts: [],
         lastPrompt: null,
         lastReply: null,
         nextAction: null,
@@ -234,6 +237,7 @@ async function buildState(): Promise<OperatorState> {
     const finishedIdle = s.status === "idle" && s.live && s.turnEnd === "finished";
     if (s.role === "operator" || (s.status !== "done" && s.status !== "working" && !finishedIdle) || !text) continue;
     const ai = nextActionFor(s.id, s.cwd, text, changed);
+    s.topic = ai?.topic ?? null;
     // An old finished turn goes idle, unless its last message still asks something of you.
     if (finishedIdle) {
       if (!ai?.needsUser) continue;
@@ -514,6 +518,25 @@ app.post("/api/uploads", async (c) => {
   const path = join(UPLOAD_DIR, `${randomUUID()}.${ext}`);
   await writeFile(path, bytes);
   return c.json({ path });
+});
+
+// A file path clicked in Claude's text, opened with its default app. Relative paths resolve
+// against the session's folder. Anything that could run code (an app, a script, an
+// executable) is only revealed in Finder, so a click never launches something.
+const RUNNABLE_EXT = /\.(app|command|tool|terminal|sh|zsh|bash|scpt|applescript|workflow|action|pkg|mpkg|dmg|jar|py|rb|pl|exe|bin|webloc|inetloc|fileloc|shortcut)$/i;
+
+app.post("/api/open", async (c) => {
+  const { path, cwd } = (await c.req.json()) as { path?: unknown; cwd?: unknown };
+  if (typeof path !== "string" || !path.trim()) return c.json({ error: "no path" }, 400);
+  const expanded = path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
+  const full = isAbsolute(expanded) ? expanded : typeof cwd === "string" && isAbsolute(cwd) ? resolve(cwd, expanded) : null;
+  if (!full) return c.json({ error: "relative path with no session folder" }, 400);
+  const info = await stat(full).catch(() => null);
+  if (!info) return c.json({ error: "not found" }, 404);
+  const runnable = RUNNABLE_EXT.test(full) || (info.isFile() && (info.mode & 0o111) !== 0) || (info.isDirectory() && extname(full) !== "");
+  const args = runnable ? ["-R", full] : [full];
+  const ok = await new Promise<boolean>((done) => execFile("open", args, (err) => done(!err)));
+  return ok ? c.json({ ok: true, revealed: runnable }) : c.json({ error: "open failed" }, 500);
 });
 
 // What ending this session could clean up, for the checklist behind "end session".

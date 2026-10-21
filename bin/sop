@@ -25,7 +25,8 @@ const USAGE = `sop - session operator
       --badge <label>              iTerm badge for the new tab, or tmux window name
       --term iterm|tmux            where to start it (default $OPERATOR_TERMINAL, else iterm)
 
-<who> is a session id prefix, a card or issue like sc-8121 or 123, a project name, or part of a branch.`;
+<who> is a session id prefix, a card or issue like sc-8121 or 123, a project name, part of a
+branch, or part of the name you gave it with /rename.`;
 
 function die(msg) {
   console.error(msg);
@@ -69,6 +70,7 @@ async function find(who) {
       label(s).toLowerCase() === w ||
       s.refs.some((r) => r.source === "own" && (r.label.toLowerCase() === w || r.label.toLowerCase().endsWith(`#${w.replace(/^#/, "")}`))) ||
       s.project.toLowerCase() === w ||
+      (s.customTitle ?? "").toLowerCase().includes(w) ||
       (s.branch ?? "").toLowerCase().includes(w),
   );
   // Prefer running sessions when an old closed one matches too.
@@ -83,7 +85,9 @@ async function ls() {
   const { sessions, pending } = await api("/api/state");
   for (const s of sessions) {
     const role = s.role === "operator" ? " (operator)" : "";
-    console.log(`${s.id.slice(0, 8)}  ${s.status.padEnd(8)}  ${label(s)}${role}${s.live ? "" : " [not running]"}\n          ${need(s)}`);
+    const name = s.customTitle ? ` "${s.customTitle}"` : "";
+    const topic = s.topic ? `  now: ${s.topic}` : "";
+    console.log(`${s.id.slice(0, 8)}  ${s.status.padEnd(8)}  ${label(s)}${name}${role}${s.live ? "" : " [not running]"}${topic}\n          ${need(s)}`);
   }
   for (const p of pending) console.log(`approval  ${p.sessionId.slice(0, 8)} wants ${p.toolName}: ${p.summary}`);
 }
