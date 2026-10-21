@@ -25,7 +25,7 @@ const USAGE = `sop - session operator
       --badge <label>              iTerm badge for the new tab, or tmux window name
       --term iterm|tmux            where to start it (default $OPERATOR_TERMINAL, else iterm)
 
-<who> is a session id prefix, a card or issue like sc-8121 or #123, a project name, or part of a branch.`;
+<who> is a session id prefix, a card or issue like sc-8121 or 123, a project name, or part of a branch.`;
 
 function die(msg) {
   console.error(msg);
@@ -67,7 +67,7 @@ async function find(who) {
       s.id.startsWith(w) ||
       (w === "operator" && s.role === "operator") ||
       label(s).toLowerCase() === w ||
-      s.refs.some((r) => r.source === "own" && r.label.toLowerCase() === w) ||
+      s.refs.some((r) => r.source === "own" && (r.label.toLowerCase() === w || r.label.toLowerCase().endsWith(`#${w.replace(/^#/, "")}`))) ||
       s.project.toLowerCase() === w ||
       (s.branch ?? "").toLowerCase().includes(w),
   );
@@ -214,12 +214,21 @@ async function operator(args) {
 const HOOK_EVENTS = { PermissionRequest: 3660, Notification: 5, Stop: 5, UserPromptSubmit: 5, SessionEnd: 5 };
 
 // Merges the hooks into ~/.claude/settings.json next to whatever's already there, pointing at
-// this checkout. An old operator-hook path is updated in place, never duplicated. Then links
-// sop into ~/.local/bin. Safe to run again.
+// the main checkout (never a worktree, which goes away when its branch is done). An old
+// operator-hook path is updated in place, never duplicated. Then links sop into ~/.local/bin.
+// Safe to run again.
 function setup(args) {
   const dry = args.includes("--dry-run");
-  const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  const hook = join(repo, "bin", "operator-hook");
+  const here = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  let repo = here;
+  try {
+    repo = dirname(execFileSync("git", ["-C", here, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" }).trim());
+  } catch {}
+  if (repo !== here) console.log(`this is a worktree, so the hooks point at the main checkout: ${repo}`);
+  const hookPath = join(repo, "bin", "operator-hook");
+  if (!existsSync(hookPath)) die(`${hookPath} isn't there - update the main checkout first`);
+  // Claude Code runs the command through a shell, so a path with spaces needs quotes.
+  const hook = /^[\w./-]+$/.test(hookPath) ? hookPath : `'${hookPath.replaceAll("'", `'\\''`)}'`;
   const settingsPath = join(homedir(), ".claude", "settings.json");
   const changes = [];
 
@@ -244,9 +253,10 @@ function setup(args) {
       ours.timeout = timeout;
     }
   }
+  let backup = null;
   if (changes.length > 0 && !dry) {
     mkdirSync(dirname(settingsPath), { recursive: true });
-    if (existsSync(settingsPath)) copyFileSync(settingsPath, `${settingsPath}.bak-${Date.now()}`);
+    if (existsSync(settingsPath)) copyFileSync(settingsPath, (backup = `${settingsPath}.bak-${Date.now()}`));
     writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
   }
 
@@ -269,7 +279,7 @@ function setup(args) {
   }
 
   console.log(changes.length === 0 ? "already set up" : `${dry ? "would " : ""}${changes.join("\n" + (dry ? "would " : ""))}`);
-  if (changes.length > 0 && !dry && existsSync(settingsPath)) console.log(`(old settings backed up next to ${settingsPath})`);
+  if (backup) console.log(`(old settings backed up to ${backup})`);
   console.log(`
 then:
   cd ${repo} && pnpm install && pnpm build && pnpm start     the deck, at ${BASE}

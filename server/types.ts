@@ -1,3 +1,5 @@
+import type { TrackerContext, TrackerName } from "./mentions.ts";
+
 export type SessionStatus = "waiting" | "failing" | "working" | "done" | "blocked" | "idle" | "closed";
 
 export interface Session {
@@ -21,10 +23,10 @@ export interface Session {
   live: boolean;
   /** What the session is waiting on outside the user (CI, a deploy, a review), when status is "blocked". */
   blockedOn: string | null;
-  /** Shortcut cards and PRs this session is about, with their titles. */
+  /** Cards, issues and PRs this session is about or named, with their titles. */
   refs: Ref[];
-  /** URL prefixes a card or issue number is appended to, so any mention can link out. */
-  refLinks: RefLinks;
+  /** The session's repo and Shortcut workspace, to resolve and link mentions that weren't looked up. */
+  trackers: TrackerContext;
   /** The main branch, when the session's branch went into it as a local merge commit (no PR). Closed sessions only. */
   mergedInto: string | null;
   status: SessionStatus;
@@ -36,20 +38,18 @@ export interface Session {
   lastActivity: string;
 }
 
-export interface RefLinks {
-  shortcut: string | null;
-  github: string | null;
-}
-
 export interface Ref {
-  tracker: "shortcut" | "github";
+  tracker: TrackerName;
   kind: "card" | "issue" | "pr";
-  id: number;
-  /** How it's written in text: sc-123, #123, PR #123. */
+  /** The tracker's id: "123" for a card, "owner/repo#123" for an issue or PR. */
+  id: string;
+  /** "<tracker>:<id>", lowercased. What mentions resolve to. */
+  key: string;
+  /** How it's written in text: sc-123, #123 or PR #123 in the session's repo, owner/repo#123 elsewhere. */
   label: string;
   title: string;
   url: string;
-  /** card: its Shortcut workflow state, lowercased (build, test, released). issue: open | closed. pr: open | draft | merged | closed. */
+  /** card: its Shortcut workflow state, lowercased (build, test, released). issue: its GitHub Project Status column lowercased, else open | closed | done. pr: open | draft | merged | closed. */
   state: string;
   /** "own": the session's branch card/PR. "mention": named in its messages. */
   source: "own" | "mention";

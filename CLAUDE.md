@@ -9,6 +9,8 @@ runs the others. Hono server on 127.0.0.1:4477, React + Tailwind v4 web app (Mat
 - `server/sessions.ts` - reads `~/.claude/projects/*/*.jsonl` transcripts into `Session`s
 - `server/refs.ts` - card/issue/PR refs for a session, one adapter per tracker (Shortcut, GitHub issues
   + Projects Status). Issues come from a `123-...` branch or the issues its PR closes
+- `server/mentions.ts` - how tracker ids are written in text, resolved to a repo, labeled and
+  linked. Shared with the web app, so no node imports
 - `server/next-action.ts` - what a session needs from the user
 - `server/reply.ts` - types into a session's iTerm tab or tmux pane, `closeSession` (`/exit` + close it)
 - `server/cleanup.ts` - what ending a session can clean up (servers in its folder, a merged clean

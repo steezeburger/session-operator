@@ -2,31 +2,33 @@ import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
-import type { Ref, RefLinks } from "./types.ts";
+import { githubId, labelFor, parseMentions, refKey, resolveId, type TrackerContext, type TrackerName } from "./mentions.ts";
+import type { Ref } from "./types.ts";
 
 const run = promisify(execFile);
 
 const MISS_TTL_MS = 60 * 1000;
 
+/** A ref as a tracker loads it. Its label, source and mention count depend on the session. */
+type Loaded = Omit<Ref, "label" | "source" | "mentions">;
+
 /**
- * One issue tracker. Each one finds its ids in Claude's text (and maybe the branch name) and
- * looks them up. Mention counts are keyed "<tracker>:<id>".
+ * One issue tracker: the ids a branch name says a session is about, and how to look one up.
+ * How its ids are written in text lives in mentions.ts, which the web app shares.
  */
 interface Tracker {
-  name: Ref["tracker"];
-  /** Matches an id in free text; group 1 is the number. */
-  mention: RegExp;
-  /** Ids the branch name says the session is about. */
-  fromBranch(branch: string): number[];
+  name: TrackerName;
+  /** Ids the branch name says the session is about. GitHub's are relative ("#123"). */
+  fromBranch(branch: string): string[];
   ttl: number;
-  /** Cache key for one id, or null when this session can't look it up (no GitHub repo). */
-  key(id: number, repo: string | null): string | null;
-  load(id: number, repo: string | null): Promise<Ref | null>;
+  /** Whether lookups can work on this machine at all. */
+  ready(): boolean;
+  /** Looks up one resolved id. */
+  load(id: string): Promise<Loaded | null>;
 }
 
 // Shortcut: SHORTCUT_API_TOKEN only. Read-only GETs, never logged.
 const SHORTCUT_API = "https://api.app.shortcut.com/api/v3";
-const CARD_RE = /\bsc-(\d{2,6})\b/gi;
 
 // Workflow state id -> name ("Build", "Test", "Released"), fetched once.
 let statesPromise: Promise<Map<number, string>> | null = null;
@@ -45,10 +47,9 @@ function workflowStates(token: string): Promise<Map<number, string>> {
 
 const shortcut: Tracker = {
   name: "shortcut",
-  mention: CARD_RE,
-  fromBranch: (branch) => [...branch.matchAll(CARD_RE)].map((m) => Number(m[1])),
+  fromBranch: (branch) => [...branch.matchAll(/\bsc-(\d{2,6})\b/gi)].map((m) => m[1]!),
   ttl: 10 * 60 * 1000,
-  key: (id) => (process.env.SHORTCUT_API_TOKEN ? String(id) : null),
+  ready: () => !!process.env.SHORTCUT_API_TOKEN,
   async load(id) {
     const token = process.env.SHORTCUT_API_TOKEN;
     if (!token) return null;
@@ -66,10 +67,8 @@ const shortcut: Tracker = {
     return {
       tracker: "shortcut",
       kind: "card",
-      label: `sc-${id}`,
-      source: "own",
-      mentions: 0,
       id,
+      key: refKey("shortcut", id),
       title: s.name,
       url: s.app_url,
       state: stateName?.toLowerCase() ?? (s.completed ? "done" : s.started ? "started" : "unstarted"),
@@ -78,8 +77,6 @@ const shortcut: Tracker = {
 };
 
 // GitHub: issues and PRs share one number space, and the issues endpoint returns both.
-const GH_RE = /(?:\bPR\s*#?|\bpull\/|\bissues\/|(?<![\w/])#)(\d{3,6})\b/gi;
-
 interface GhIssue {
   number: number;
   title: string;
@@ -91,45 +88,60 @@ interface GhIssue {
 }
 
 // A branch names its issue by leading with the number: "123-fix-login" (what `gh issue develop`
-// makes), also "issue-123-...", "gh-123/..." or "feat/123-...".
-const ISSUE_BRANCH_RE = /^(?:[\w.-]+\/)?(?:issue-|gh-)?(\d{1,6})(?:[-_/]|$)/i;
+// makes), also "issue-123-...", "gh-123/..." or "me/feat/123-...". A leading date
+// ("2026-10-notes") isn't an issue.
+const ISSUE_BRANCH_RE = /^(?:[\w.-]+\/)*(?:issue-|gh-)?(?!(?:19|20)\d\d-\d\d(?:\D|$))(\d{1,6})(?:[-_/]|$)/i;
+
+// Set when the token lacks read:project, so issues skip the Project lookup for a while.
+let noProjectScopeUntil = 0;
 
 /**
  * The issue's Status column on a GitHub Project ("Todo", "In Progress", "Done"), if it's on
- * one. Needs the read:project scope (`gh auth refresh -s read:project`); without it, null.
+ * one; on several, the most recently changed. Needs the read:project scope
+ * (`gh auth refresh -s read:project`); without it, null.
  */
 async function projectStatus(repo: string, n: number): Promise<string | null> {
+  if (Date.now() < noProjectScopeUntil) return null;
   const [owner, name] = repo.split("/");
   try {
     const { stdout } = await run(
       "gh",
       [
         "api", "graphql",
-        "-f", "query=query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){issue(number:$n){projectItems(first:5){nodes{fieldValueByName(name:\"Status\"){... on ProjectV2ItemFieldSingleSelectValue{name}}}}}}}",
+        "-f", "query=query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){issue(number:$n){projectItems(first:10){nodes{fieldValueByName(name:\"Status\"){... on ProjectV2ItemFieldSingleSelectValue{name updatedAt}}}}}}}",
         "-f", `o=${owner}`, "-f", `r=${name}`, "-F", `n=${n}`,
       ],
       { timeout: 15_000 },
     );
-    const nodes = (JSON.parse(stdout) as { data?: { repository?: { issue?: { projectItems?: { nodes?: { fieldValueByName?: { name?: string } | null }[] } } } } })
+    type Status = { name?: string; updatedAt?: string } | null;
+    const nodes = (JSON.parse(stdout) as { data?: { repository?: { issue?: { projectItems?: { nodes?: { fieldValueByName?: Status }[] } } } } })
       .data?.repository?.issue?.projectItems?.nodes ?? [];
-    return nodes.map((x) => x.fieldValueByName?.name).find((x): x is string => !!x) ?? null;
-  } catch {
+    const statuses = nodes.map((x) => x.fieldValueByName).filter((x): x is { name: string; updatedAt?: string } => !!x?.name);
+    statuses.sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
+    return statuses[0]?.name ?? null;
+  } catch (e) {
+    const out = `${(e as { stdout?: string }).stdout ?? ""}${(e as { stderr?: string }).stderr ?? ""}`;
+    if (/INSUFFICIENT_SCOPES|read:project/.test(out)) noProjectScopeUntil = Date.now() + 10 * 60 * 1000;
     return null;
   }
 }
 
-function githubRef(i: GhIssue, status: string | null = null): Ref {
+function githubRef(repo: string, i: GhIssue, status: string | null = null): Loaded {
   const pr = !!i.pull_request;
   // An issue on a Project shows its Status column; otherwise closed-as-completed reads as done.
-  const issueState = status?.toLowerCase() ?? (i.state === "closed" && i.state_reason === "completed" ? "done" : i.state);
+  // Closed as not planned stays closed, whatever column a Project's "Item closed" workflow
+  // moved it to, so it never reads as shipped.
+  const issueState =
+    i.state_reason === "not_planned"
+      ? "closed"
+      : (status?.toLowerCase() ?? (i.state === "closed" && i.state_reason === "completed" ? "done" : i.state));
   const state = pr ? (i.pull_request?.merged_at ? "merged" : i.draft && i.state === "open" ? "draft" : i.state) : issueState;
+  const id = `${repo}#${i.number}`;
   return {
     tracker: "github",
     kind: pr ? "pr" : "issue",
-    label: pr ? `PR #${i.number}` : `#${i.number}`,
-    source: "own",
-    mentions: 0,
-    id: i.number,
+    id,
+    key: refKey("github", id),
     title: i.title,
     url: i.html_url,
     state,
@@ -138,18 +150,18 @@ function githubRef(i: GhIssue, status: string | null = null): Ref {
 
 const github: Tracker = {
   name: "github",
-  mention: GH_RE,
   fromBranch: (branch) => {
     const m = branch.match(ISSUE_BRANCH_RE);
-    return m ? [Number(m[1])] : [];
+    return m ? [`#${m[1]}`] : [];
   },
   ttl: 2 * 60 * 1000,
-  key: (id, repo) => (repo ? `${repo}#${id}` : null),
-  async load(id, repo) {
-    if (!repo) return null;
-    const { stdout } = await run("gh", ["api", `repos/${repo}/issues/${id}`], { timeout: 15_000 });
+  ready: () => true,
+  async load(id) {
+    const g = githubId(id);
+    if (!g) return null;
+    const { stdout } = await run("gh", ["api", `repos/${g.repo}/issues/${g.n}`], { timeout: 15_000 });
     const issue = JSON.parse(stdout) as GhIssue;
-    return githubRef(issue, issue.pull_request ? null : await projectStatus(repo, id));
+    return githubRef(g.repo, issue, issue.pull_request ? null : await projectStatus(g.repo, g.n));
   },
 };
 
@@ -173,31 +185,18 @@ function shortcutSlug(): Promise<string | null> {
   return slugPromise;
 }
 
-/** Where a bare sc-123 or #123 in this session's text points. GitHub sends issue URLs on to the PR. */
-export async function refLinks(cwd: string): Promise<RefLinks> {
+/** The session's repo and Shortcut workspace, for resolving and linking mentions. */
+export async function trackerContext(cwd: string): Promise<TrackerContext> {
   const [repo, slug] = await Promise.all([githubRepo(cwd), shortcutSlug()]);
-  return {
-    shortcut: slug && `https://app.shortcut.com/${slug}/story/`,
-    github: repo && `https://github.com/${repo}/issues/`,
-  };
+  return { repo, shortcutSlug: slug };
 }
 
-/** Tallies tracker mentions in one message into counts keyed "<tracker>:<id>". */
+/** Tallies tracker mentions in one message into counts keyed "<tracker>:<id>", ids as written. */
 export function countMentions(text: string, counts: Map<string, number>) {
-  for (const t of TRACKERS) {
-    for (const m of text.matchAll(t.mention)) {
-      const k = `${t.name}:${m[1]}`;
-      counts.set(k, (counts.get(k) ?? 0) + 1);
-    }
+  for (const m of parseMentions(text)) {
+    const k = `${m.tracker}:${m.id}`;
+    counts.set(k, (counts.get(k) ?? 0) + 1);
   }
-}
-
-function top(counts: Map<string, number>, tracker: Ref["tracker"], n: number): number[] {
-  return [...counts]
-    .filter(([k]) => k.startsWith(`${tracker}:`))
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, n)
-    .map(([k]) => Number(k.slice(tracker.length + 1)));
 }
 
 interface Cached<T> {
@@ -206,9 +205,9 @@ interface Cached<T> {
   ttl: number;
 }
 
-const cache = new Map<string, Cached<Ref>>();
+const cache = new Map<string, Cached<Loaded>>();
 const merges = new Map<string, Cached<string>>();
-const closers = new Map<string, Cached<number[]>>();
+const branches = new Map<string, Cached<BranchPr>>();
 const repos = new Map<string, string | null>();
 const repoDirs = new Map<string, Promise<string | null>>();
 const inflight = new Set<string>();
@@ -308,29 +307,34 @@ export async function mergedInto(cwd: string, branch: string | null, onReady: ()
   return merges.get(key)?.value ?? null;
 }
 
-// The issues the branch's PR says it closes ("Closes #123"), for branches that don't name one.
-async function loadClosedIssues(repo: string, branch: string): Promise<number[] | null> {
-  const { stdout } = await run(
-    "gh",
-    ["pr", "list", "-R", repo, "--head", branch, "--state", "all", "--limit", "1", "--json", "closingIssuesReferences"],
-    { timeout: 15_000 },
-  );
-  const [p] = JSON.parse(stdout) as { closingIssuesReferences?: { number: number }[] }[];
-  const ns = (p?.closingIssuesReferences ?? []).map((x) => x.number);
-  return ns.length > 0 ? ns : null;
+// The branch's PR, looked up by head ref, and the issues it says it closes ("Closes #123"),
+// which may live in another repo.
+interface BranchPr {
+  pr: string;
+  closes: string[];
 }
 
-async function loadBranchPr(repo: string, branch: string): Promise<Ref | null> {
-  const { stdout } = await run("gh", ["pr", "list", "-R", repo, "--head", branch, "--state", "all", "--limit", "1", "--json", "number"], {
-    timeout: 15_000,
-  });
-  const [p] = JSON.parse(stdout) as { number: number }[];
-  return p ? github.load(p.number, repo) : null;
+async function loadBranchPr(repo: string, branch: string): Promise<BranchPr | null> {
+  const { stdout } = await run(
+    "gh",
+    ["pr", "list", "-R", repo, "--head", branch, "--state", "all", "--limit", "1", "--json", "number,closingIssuesReferences"],
+    { timeout: 15_000 },
+  );
+  type Closing = { number: number; repository?: { name: string; owner: { login: string } } };
+  const [p] = JSON.parse(stdout) as { number: number; closingIssuesReferences?: Closing[] }[];
+  if (!p) return null;
+  return {
+    pr: `${repo}#${p.number}`.toLowerCase(),
+    closes: (p.closingIssuesReferences ?? []).map((x) =>
+      (x.repository ? `${x.repository.owner.login}/${x.repository.name}#${x.number}` : `${repo}#${x.number}`).toLowerCase(),
+    ),
+  };
 }
 
 /**
- * Cards, issues and PRs a session is about: the branch's own first, then the ones Claude
- * named most. Lookups run in the background; returns what's cached now.
+ * Cards, issues and PRs a session is about: its branch's PR and the issues that PR closes,
+ * whatever the branch name says, then the ones Claude named most. Lookups run in the
+ * background; returns what's cached now.
  */
 export async function refsFor(
   cwd: string,
@@ -339,38 +343,47 @@ export async function refsFor(
   onReady: () => void,
 ): Promise<Ref[]> {
   const repo = await githubRepo(cwd);
-  const out: Ref[] = [];
+
+  // "#123" and "owner/repo#123" are the same item once pinned to this session's repo.
+  const mentions = new Map<string, number>();
+  for (const [k, n] of counts) {
+    const at = k.indexOf(":");
+    const tracker = k.slice(0, at) as TrackerName;
+    const id = resolveId(tracker, k.slice(at + 1), repo);
+    if (id) mentions.set(refKey(tracker, id), (mentions.get(refKey(tracker, id)) ?? 0) + n);
+  }
+
+  const wanted: { t: Tracker; id: string; source: Ref["source"] }[] = [];
   const seen = new Set<string>();
-  const add = (r: Ref | null | undefined, source: Ref["source"]) => {
-    const k = r && `${r.tracker}:${r.id}`;
-    if (!r || !k || seen.has(k)) return;
-    seen.add(k);
-    out.push({ ...r, source, mentions: counts.get(k) ?? 0 });
+  const want = (t: Tracker, id: string | null, source: Ref["source"]) => {
+    if (!id || seen.has(refKey(t.name, id))) return;
+    seen.add(refKey(t.name, id));
+    wanted.push({ t, id, source });
   };
 
-  // The branch's PR is looked up by head ref, not by a number in its name.
   if (repo && branch && branch !== "main" && branch !== "master" && branch !== "HEAD") {
     const key = `branch:${repo}#${branch}`;
-    fill(cache, key, github.ttl, () => loadBranchPr(repo, branch), onReady);
-    add(cache.get(key)?.value, "own");
-    const closesKey = `closes:${repo}#${branch}`;
-    fill(closers, closesKey, github.ttl, () => loadClosedIssues(repo, branch), onReady);
-    for (const id of closers.get(closesKey)?.value ?? []) {
-      const k = `github:${github.key(id, repo)}`;
-      fill(cache, k, github.ttl, () => github.load(id, repo), onReady);
-      add(cache.get(k)?.value, "own");
-    }
+    fill(branches, key, github.ttl, () => loadBranchPr(repo, branch), onReady);
+    const b = branches.get(key)?.value;
+    want(github, b?.pr ?? null, "own");
+    for (const id of b?.closes ?? []) want(github, id, "own");
   }
   for (const t of TRACKERS) {
-    const own = new Set(t.fromBranch(branch ?? ""));
-    for (const id of new Set([...own, ...top(counts, t.name, 4)])) {
-      const key = t.key(id, repo);
-      if (!key) continue;
-      const k = `${t.name}:${key}`;
-      fill(cache, k, t.ttl, () => t.load(id, repo), onReady);
-      add(cache.get(k)?.value, own.has(id) ? "own" : "mention");
-    }
+    for (const id of t.fromBranch(branch ?? "")) want(t, resolveId(t.name, id, repo), "own");
   }
-  // The session's own card and PR lead; mentions follow.
-  return out.sort((a, b) => Number(a.source === "mention") - Number(b.source === "mention"));
+  for (const t of TRACKERS) {
+    const top = [...mentions].filter(([k]) => k.startsWith(`${t.name}:`)).sort((a, b) => b[1] - a[1]).slice(0, 4);
+    for (const [k] of top) want(t, k.slice(t.name.length + 1), "mention");
+  }
+
+  // The session's own card, issue and PR lead; mentions follow.
+  const out: Ref[] = [];
+  for (const { t, id, source } of wanted) {
+    if (!t.ready()) continue;
+    const key = refKey(t.name, id);
+    fill(cache, key, t.ttl, () => t.load(id), onReady);
+    const r = cache.get(key)?.value;
+    if (r) out.push({ ...r, source, label: labelFor(r.tracker, r.id, r.kind, repo), mentions: mentions.get(key) ?? 0 });
+  }
+  return out;
 }

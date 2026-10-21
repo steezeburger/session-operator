@@ -282,7 +282,7 @@ function SessionRow({ s, now, onOpen }: { s: Session; now: number; onOpen: () =>
         {refs.length > 0 ? (
           <span className="text-white">
             {refs.map((r, i) => (
-              <span key={`${r.tracker}:${r.id}`}>
+              <span key={r.key}>
                 {i === 0 ? " " : " · "}
                 <RefLink r={r} />
               </span>

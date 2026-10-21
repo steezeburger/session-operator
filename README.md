@@ -40,12 +40,16 @@ Each session shows the work it's for, found from its branch:
 - **GitHub PRs** - the PR whose head is the session's branch, with its state.
 - **GitHub issues** - a branch that leads with the issue number (`123-fix-login`, what
   `gh issue develop` makes; also `issue-123-...`, `feat/123-...`), plus any issue the
-  branch's PR closes ("Closes #123"). If the issue is on a GitHub Project, its Status column
-  shows as the state, and Done counts as shipped. That needs `gh auth refresh -s read:project`;
-  without it you get open/closed.
+  branch's PR closes ("Closes #123", or `owner/repo#123` in another repo). If the issue is on
+  a GitHub Project, its Status column shows as the state, and Done counts as shipped, unless
+  it was closed as not planned. That needs `gh auth refresh -s read:project`; without it you
+  get open/closed/done.
 - **Shortcut cards** - a branch that names one (`sc-123/...`), when `SHORTCUT_API_TOKEN` is set.
 
 Cards, issues and PRs that Claude only mentions are listed separately and link out too.
+`sc-123`, `PR #123`, `owner/repo#123` and full GitHub or Shortcut URLs link wherever they
+appear; a bare `#123` only links once it turns out to be a real issue or PR in the session's
+repo.
 
 ## The operator
 

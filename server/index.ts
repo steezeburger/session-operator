@@ -10,7 +10,8 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { nextActionFor } from "./next-action.ts";
-import { mergedInto, refLinks, refsFor } from "./refs.ts";
+import { workItem } from "./mentions.ts";
+import { mergedInto, refsFor, trackerContext } from "./refs.ts";
 import { cleanupPlan, runCleanup, sessionTree } from "./cleanup.ts";
 import { closeSession, liveSessions, sendReply } from "./reply.ts";
 import { fullReplies, mentionCounts, readFeed, scanSessions, toolResolvedSince } from "./sessions.ts";
@@ -188,7 +189,7 @@ async function buildState(): Promise<OperatorState> {
         live: false,
         blockedOn: null,
         refs: [],
-        refLinks: { shortcut: null, github: null },
+        trackers: { repo: null, shortcutSlug: null },
         mergedInto: null,
         status: hs.status,
         statusDetail: hs.detail,
@@ -269,7 +270,7 @@ async function buildState(): Promise<OperatorState> {
 
   await Promise.all(
     [...byId.values()].map(async (s) => {
-      s.refLinks = await refLinks(s.cwd);
+      s.trackers = await trackerContext(s.cwd);
       if (s.status === "idle" || s.role === "operator") return;
       s.refs = await refsFor(s.cwd, s.branch, mentionCounts.get(s.id) ?? new Map(), changed);
       if (s.status === "closed") s.mergedInto = await mergedInto(s.cwd, s.branch, changed);
@@ -311,8 +312,7 @@ const nudged = new Set<string>();
 let lastNudgeAt = 0;
 
 function sessionLabel(s: Session): string {
-  // The card or issue the branch is for (a Shortcut card, or a GitHub issue).
-  const card = s.refs.find((r) => r.source === "own" && r.kind === "card") ?? s.refs.find((r) => r.source === "own" && r.kind === "issue");
+  const card = workItem(s.refs);
   return card ? card.label : s.branch && s.branch !== "main" ? `${s.project} (${s.branch})` : s.project;
 }
 

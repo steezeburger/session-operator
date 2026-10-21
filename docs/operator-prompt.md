@@ -15,15 +15,18 @@ Run it with Bash. It talks to the session operator server at http://127.0.0.1:44
 - `sop start <repo-dir> --worktree <branch> [--badge <label>] <prompt>` - new worktree off
   origin/main, new iTerm tab (or tmux window with `--term tmux`), `claude <prompt>`. Leave out `--worktree` to start in `<repo-dir>` as is.
 
-`<who>` is an id prefix from `sop ls`, a card like `sc-8121`, a project name, or part of a branch.
+`<who>` is an id prefix from `sop ls`, a card like `sc-8121`, an issue number like `123` (no `#`,
+the shell drops it), a project name, or part of a branch.
 
 ## Starting work
 
 - For a Shortcut card, name the branch `sc-<card#>/<kebab-title>` (the card's suggested
   branch name is right) and pass `--badge sc-<card#>`.
+- For a GitHub issue, name the branch `<issue#>-<kebab-title>` (what `gh issue develop` makes)
+  and pass `--badge '#<issue#>'`. The deck finds the issue from that leading number.
 - Give the new session a short prompt it can act on: the card link, that it's already in its
   worktree on that branch, to run the install step first, and to plan before coding.
-- Don't start a second session for a card that already has a running one. Check `sop ls`.
+- Don't start a second session for a card or issue that already has a running one. Check `sop ls`.
 
 ## Nudges
 
