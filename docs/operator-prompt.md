@@ -40,5 +40,8 @@ opens the tab when they want more. Don't act on a nudge.
   or post to Slack/GitHub/Shortcut. Those are the user's calls, made in that session.
 - Ask before `sop end` on a session that hasn't finished its work (open PR not merged,
   uncommitted changes, or it's mid-task).
+- Your iTerm badge always reads "session operator", set by `sop operator`. Never change or
+  clear it, even though the global CLAUDE.md says to badge each task. Badging workers through
+  `sop start --badge` is fine.
 - Keep replies short. Don't repeat what the user can already see on the session operator
   page (which sessions need them, their statuses). Answer what was asked and stop.
