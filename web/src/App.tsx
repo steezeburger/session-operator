@@ -3,7 +3,8 @@ import { flushSync } from "react-dom";
 import type { Behavior, OperatorState, PendingDecision, PermissionUpdate, Session, SessionStatus } from "../../server/types.ts";
 import { setFavicon } from "./favicon.ts";
 import { MatrixRain } from "./MatrixRain.tsx";
-import { closedOutcome, focusRefs, RefLink, RefList, WithMentions } from "./Refs.tsx";
+import { closedOutcome, focusRefs, RefLink, RefList, sessionMatches, sessionName } from "./Refs.tsx";
+import { WithPaths } from "./Paths.tsx";
 import { ReplyBox } from "./ReplyBox.tsx";
 import { SessionDetail } from "./SessionDetail.tsx";
 
@@ -261,23 +262,28 @@ function movedRows(cur: OperatorState, next: OperatorState) {
 }
 
 // Everything the page shows, sorted into where it goes.
-function sortState(state: OperatorState | null) {
+function sortState(state: OperatorState | null, query = "") {
   const all = state?.sessions ?? [];
   // The running operator gets its own strip; the rest are the sessions it runs.
   const operators = all.filter((s) => s.role === "operator" && s.live);
-  const sessions = all.filter((s) => !operators.includes(s));
+  const everyone = all.filter((s) => !operators.includes(s));
+  // What the filter lets through. Groups list those; `allGroups` counts everyone.
+  const sessions = everyone.filter((s) => sessionMatches(s, query));
   const pending = state?.pending ?? [];
   const operatorIds = new Set(operators.map((s) => s.id));
+  const grouped = (from: Session[]) => GROUPS.map((g) => ({ ...g, rows: from.filter((s) => g.statuses.includes(s.status)) }));
   return {
     all,
     operators,
+    everyone,
     sessions,
     pending,
     idle: sessions.filter((s) => s.status === "idle"),
     closed: sessions.filter((s) => s.status === "closed"),
     // Approvals show inside their session's card. Only one whose session isn't listed gets its own.
-    approvals: pending.filter((p) => !operatorIds.has(p.sessionId) && !sessions.some((s) => s.id === p.sessionId)),
-    groups: GROUPS.map((g) => ({ ...g, rows: sessions.filter((s) => g.statuses.includes(s.status)) })),
+    approvals: pending.filter((p) => !operatorIds.has(p.sessionId) && !everyone.some((s) => s.id === p.sessionId)),
+    groups: grouped(sessions),
+    allGroups: grouped(everyone),
   };
 }
 
@@ -501,8 +507,9 @@ function SessionRow({ s, now, leaving, onOpen }: { s: Session; now: number; leav
           s.branch && <span className="text-code-dim"> {s.branch}</span>
         )}
       </div>
-      <div className="hidden min-w-0 truncate px-1.5 py-0.5 md:block" title={refs[0]?.title ?? s.lastPrompt ?? undefined}>
-        {refs[0]?.title ?? s.title ?? "-"}
+      <div className="hidden min-w-0 truncate px-1.5 py-0.5 md:block" title={[sessionName(s), s.topic && `now: ${s.topic}`].filter(Boolean).join("\n") || undefined}>
+        {sessionName(s) ?? "-"}
+        {s.topic && <span className="text-code-dim"> · now: {s.topic}</span>}
       </div>
       <div
         className={`hidden truncate px-1.5 py-0.5 font-bold uppercase md:block ${s.status === "blocked" ? "text-blocked [text-shadow:0_0_4px_rgb(0_229_255/0.6)]" : (outcome?.cls ?? "")}`}
@@ -609,10 +616,10 @@ function WithCode({ text, s }: { text: string; s: Session }) {
       {text.split(/(`[^`]+`)/).map((part, i) =>
         part.startsWith("`") && part.endsWith("`") && part.length > 2 ? (
           <code key={i} className="bg-code-dark px-1 normal-case text-white [text-shadow:0_0_4px_rgb(214_255_223/0.6)]">
-            {part.slice(1, -1)}
+            <WithPaths text={part.slice(1, -1)} s={s} />
           </code>
         ) : (
-          <WithMentions key={i} text={part} s={s} />
+          <WithPaths key={i} text={part} s={s} />
         ),
       )}
     </>
@@ -652,7 +659,8 @@ function NeedsYouCard({
           <span className="min-w-0 truncate" title={s.cwd}>
             <span className="font-bold">{repoName(s)}</span>
             {s.branch && <span className="text-code-dim"> {s.branch}</span>}
-            {s.title && <span className="text-code-dim"> · {s.title}</span>}
+            {sessionName(s) && <span className="text-code-dim"> · {sessionName(s)}</span>}
+            {s.topic && <span className="text-code-dim"> · now: {s.topic}</span>}
           </span>
           <span className="shrink-0 text-code-dim">{ago(s.lastActivity, now)} ago</span>
         </div>
@@ -724,6 +732,21 @@ export function App() {
   const now = useNow();
   const [openId, setOpenId] = useState<string | null>(null);
   const close = useCallback(() => setOpenId(null), []);
+  const [query, setQuery] = useState("");
+  const filterBox = useRef<HTMLInputElement>(null);
+
+  // "/" jumps to the filter, like most lists that have one.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const typing = (e.target as Element | null)?.closest?.("input, textarea, [contenteditable]");
+      if (e.key === "/" && !typing && !openId) {
+        e.preventDefault();
+        filterBox.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [openId]);
 
   const decide = async (id: string, behavior: Behavior, extra?: DecideExtra) => {
     const res = await fetch(`/api/decisions/${id}`, {
@@ -750,12 +773,13 @@ export function App() {
   // The header, operator strip and panel are pinned, so they stay live. The list below holds
   // still while you're aiming at it.
   const listRef = useRef<HTMLDivElement>(null);
-  const { all, operators, sessions, pending, approvals, groups } = sortState(state);
+  // The filter narrows what's listed; the tab icon, counts and lone approvals still see everyone.
+  const { all, operators, everyone, sessions, pending, approvals, allGroups } = sortState(state, query);
   const openSession = all.find((s) => s.id === openId);
   // No animation behind the panel: the snapshots would draw over it.
   const answered = useMemo(() => withSent(state, sent), [state, sent]);
   const { shown, leaving } = useCalmState(answered, listRef, !openId);
-  const list = sortState(shown);
+  const list = sortState(shown, query);
   useEffect(() => {
     const at = state ? placements(state) : new Map<string, string>();
     setSent((cur) => {
@@ -767,7 +791,7 @@ export function App() {
   const nothingActive = shown && list.approvals.length === 0 && list.groups.every((g) => g.rows.length === 0);
   // The tab icon goes amber, and the title counts, while anything waits on you.
   const needsCount =
-    (groups.find((g) => g.key === "needs")?.rows.length ?? 0) +
+    (allGroups.find((g) => g.key === "needs")?.rows.length ?? 0) +
     approvals.length +
     operators.filter((s) => s.status === "waiting" || pending.some((p) => p.sessionId === s.id)).length;
   useEffect(() => setFavicon(needsCount), [needsCount]);
@@ -778,11 +802,26 @@ export function App() {
       {/* Named so rows mid-transition stay under it, not drawn on top. */}
       <div style={vt("deck-header")} className="sticky top-0 z-20 bg-black pb-2 pt-4">
         <header className={`${BORDER} glow flex items-baseline justify-between bg-black/85 px-2 py-1`}>
-          <h1 className="cursor text-sm font-bold uppercase tracking-widest">Session operator</h1>
+          <h1 className="cursor shrink-0 text-sm font-bold uppercase tracking-widest">Session operator</h1>
+          <input
+            ref={filterBox}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key !== "Escape") return;
+              e.stopPropagation();
+              setQuery("");
+              e.currentTarget.blur();
+            }}
+            placeholder="/ filter: name, topic, branch, card, what you said"
+            className="mx-4 min-w-0 flex-1 border-b border-code-dark bg-transparent px-1 text-xs text-white caret-code outline-none placeholder:text-code-dark focus:border-code"
+          />
           {offline ? (
-            <span className="pulse bg-fail px-2 text-xs font-bold uppercase text-black [text-shadow:none]">connection lost</span>
+            <span className="pulse shrink-0 bg-fail px-2 text-xs font-bold uppercase text-black [text-shadow:none]">connection lost</span>
           ) : (
-            <span className="text-xs text-code-dim">{sessions.length} signals in the matrix</span>
+            <span className="shrink-0 text-xs text-code-dim">
+              {query ? `${sessions.length} of ${everyone.length} match` : `${everyone.length} signals in the matrix`}
+            </span>
           )}
         </header>
         {operators.map((s) => (
@@ -791,7 +830,7 @@ export function App() {
             s={s}
             now={now}
             pending={pending.filter((p) => p.sessionId === s.id)}
-            tally={groups.filter((g) => g.rows.length > 0).map((g) => ({ title: g.title, count: g.rows.length, color: g.color }))}
+            tally={allGroups.filter((g) => g.rows.length > 0).map((g) => ({ title: g.title, count: g.rows.length, color: g.color }))}
             onOpen={() => setOpenId(s.id)}
             onDecide={(id, b, a) => void decide(id, b, a)}
           />
@@ -851,8 +890,12 @@ export function App() {
             </section>
           ))}
 
-        {nothingActive && (
-          <p style={vt("empty")} className={`${BORDER} mt-6 border-dashed bg-black/85 p-3 text-center text-sm`}>wake up... nothing is running</p>
+        {query && list.sessions.length === 0 ? (
+          <p style={vt("empty")} className={`${BORDER} mt-6 border-dashed bg-black/85 p-3 text-center text-sm`}>no session matches "{query}"</p>
+        ) : (
+          nothingActive && (
+            <p style={vt("empty")} className={`${BORDER} mt-6 border-dashed bg-black/85 p-3 text-center text-sm`}>wake up... nothing is running</p>
+          )
         )}
 
         {list.idle.length > 0 && (

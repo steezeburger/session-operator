@@ -14,6 +14,8 @@ export interface NextAction {
   blockedOn: string | null;
   /** The message asks the user to do, answer or decide something. */
   needsUser: boolean;
+  /** What the session is working on, in a few words, for the list. */
+  topic: string | null;
 }
 
 const SCHEMA = JSON.stringify({
@@ -24,8 +26,9 @@ const SCHEMA = JSON.stringify({
     say: { type: ["string", "null"] },
     blockedOn: { type: ["string", "null"] },
     needsUser: { type: "boolean" },
+    topic: { type: ["string", "null"] },
   },
-  required: ["action", "url", "say", "blockedOn", "needsUser"],
+  required: ["action", "url", "say", "blockedOn", "needsUser", "topic"],
   additionalProperties: false,
 });
 
@@ -34,6 +37,7 @@ url: the link the user should open for this step, chosen ONLY from the candidate
 say: exact text the user should type back to the agent, if the message asks for specific text, else null.
 blockedOn: if nothing can usefully happen until something outside the user finishes (a CI run, a deploy, a code review, a migration, a scheduled job), name it in a few words, e.g. "prod deploy of #5801", "CI on PR #5798". Null if the user can act right now, and null when the agent itself is still doing the work (fixing, editing, running tests) - only things outside both of them count.
 needsUser: true if the message asks the user to do, test, run, answer or decide anything, false if nothing is asked of them.
+topic: what the agent is working on, as a 2-5 word lowercase noun phrase naming the thing, e.g. "chat feed colors", "pr #5801 review fixes", "favicon". Not what it did or what's next, the subject. Null if unclear.
 
 Candidate links:
 {links}
@@ -108,6 +112,7 @@ async function infer(text: string, cwd: string): Promise<NextAction | null> {
     say: out.say || null,
     blockedOn: out.blockedOn || null,
     needsUser: out.needsUser === true,
+    topic: out.topic?.trim() || null,
   };
 }
 

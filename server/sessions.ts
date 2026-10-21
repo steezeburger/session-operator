@@ -19,6 +19,7 @@ interface TranscriptRecord {
   gitBranch?: string;
   isSidechain?: boolean;
   aiTitle?: string;
+  customTitle?: string;
   lastPrompt?: string;
   isApiErrorMessage?: boolean;
   message?: { stop_reason?: string | null; content?: unknown };
@@ -91,11 +92,54 @@ export const fullReplies = new Map<string, string>();
 /** Card/PR mention counts across each session's recent Claude messages. */
 export const mentionCounts = new Map<string, Map<string, number>>();
 
+// What you typed: a plain user message, or one typed while Claude was mid-turn.
+function typedPrompt(r: TranscriptRecord): string | null {
+  const a = r.attachment;
+  if (r.type === "attachment" && a?.type === "queued_command" && a.origin?.kind === "human" && typeof a.prompt === "string") return a.prompt.trim() || null;
+  const content = r.message?.content;
+  if (r.type !== "user" || typeof content !== "string") return null;
+  return content.trimStart().startsWith("<") ? null : content.trim() || null;
+}
+
+const PROMPTS_KEPT = 20;
+
+// The /rename title and your recent messages, from the whole transcript once and then only
+// what's appended. Both can sit far before the tail parseTranscript sees: in a long session
+// tool output fills that, and a rename happens whenever.
+const histories = new Map<string, { offset: number; title: string | null; prompts: string[] }>();
+async function history(path: string, size: number): Promise<{ title: string | null; prompts: string[] }> {
+  let h = histories.get(path);
+  if (!h || size < h.offset) h = { offset: 0, title: null, prompts: [] };
+  if (size > h.offset) {
+    const text = await readFrom(path, h.offset, size);
+    const end = text.lastIndexOf("\n") + 1;
+    const prompts = [...h.prompts];
+    let title = h.title;
+    for (const line of text.slice(0, end).split("\n")) {
+      // Skip the parse for everything that can't be a rename or something you typed.
+      if (!line.includes('"custom-title"') && !line.includes('"queued_command"') && !line.includes('"type":"user"')) continue;
+      try {
+        const r = JSON.parse(line) as TranscriptRecord;
+        if (r.type === "custom-title" && r.customTitle) title = r.customTitle;
+        const typed = !r.isSidechain && typedPrompt(r);
+        if (typed) prompts.push(clip(typed, 100) ?? "");
+      } catch {
+        // half-written line
+      }
+    }
+    h = { offset: h.offset + Buffer.byteLength(text.slice(0, end)), title, prompts: prompts.slice(-PROMPTS_KEPT) };
+  }
+  histories.set(path, h);
+  return h;
+}
+
 export function parseTranscript(id: string, text: string, mtime: Date): Session | null {
   let cwd: string | undefined;
   let branch: string | undefined;
   let title: string | undefined;
   let lastPrompt: string | undefined;
+  let customTitle: string | undefined;
+  const prompts: string[] = [];
   let lastTurn: TranscriptRecord | undefined;
   let lastReply: string | undefined;
   const counts = new Map<string, number>();
@@ -113,7 +157,10 @@ export function parseTranscript(id: string, text: string, mtime: Date): Session 
     if (r.gitBranch && r.gitBranch !== "HEAD") branch = r.gitBranch;
     if (r.type === "ai-title" && r.aiTitle) title = r.aiTitle;
     if (r.type === "last-prompt" && r.lastPrompt) lastPrompt = r.lastPrompt;
+    if (r.type === "custom-title" && r.customTitle) customTitle = r.customTitle;
     if (r.isSidechain) continue;
+    const typed = typedPrompt(r);
+    if (typed) prompts.push(typed);
     if (r.type === "user" || r.type === "assistant") lastTurn = r;
     if (r.type === "assistant") {
       const said = assistantText(r);
@@ -163,6 +210,9 @@ export function parseTranscript(id: string, text: string, mtime: Date): Session 
     project: basename(cwd),
     branch: branch ?? null,
     title: clip(title, 80),
+    customTitle: clip(customTitle, 80),
+    topic: null,
+    recentPrompts: prompts.slice(-6).map((p) => clip(p, 100) ?? ""),
     lastPrompt: clip(lastPrompt),
     lastReply: clipTail(lastReply),
     nextAction: extractNextAction(lastReply),
@@ -210,7 +260,12 @@ export async function scanSessions(): Promise<Session[]> {
           await readTail(path, info.size),
           info.mtime,
         );
-        if (session) sessions.push(session);
+        if (session) {
+          const h = await history(path, info.size);
+          session.customTitle = clip(h.title ?? undefined, 80) ?? session.customTitle;
+          if (h.prompts.length > session.recentPrompts.length) session.recentPrompts = h.prompts;
+          sessions.push(session);
+        }
       } catch {
         // unreadable or vanished transcript: skip it
       }
