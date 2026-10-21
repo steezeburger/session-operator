@@ -131,6 +131,60 @@ export function SessionDetail({ session, onClose, decisions = [] }: { session: S
   const following = useRef(true);
   const [seen, setSeen] = useState<FeedItem | null>(null);
   const focus = focusRefs(session);
+
+  // Whether the buttons would squeeze the title, judged by the title text's own width and the
+  // buttons' width inline (stacked, they stretch), so moving them doesn't change the answer.
+  const titleRow = useRef<HTMLDivElement>(null);
+  const titleText = useRef<HTMLSpanElement>(null);
+  const buttonsBox = useRef<HTMLDivElement>(null);
+  const inlineWidth = useRef(0);
+  const [stacked, setStacked] = useState(false);
+  useLayoutEffect(() => {
+    const measure = () => {
+      const row = titleRow.current;
+      const text = titleText.current;
+      const box = buttonsBox.current;
+      if (!row || !text || !box) return;
+      if (!stacked) inlineWidth.current = box.offsetWidth;
+      setStacked(text.offsetWidth + 8 + inlineWidth.current > row.clientWidth);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    for (const el of [titleRow.current, buttonsBox.current]) if (el) observer.observe(el);
+    return () => observer.disconnect();
+  });
+
+  // Stacked, the buttons are a tab bar: equal parts of the full width, split by thin lines.
+  const tab = stacked ? "flex-1 border-l border-code-dark py-1.5 text-xs uppercase first:border-l-0 hover:bg-code-dark/60" : null;
+  const buttons = (
+    <div ref={buttonsBox} className={stacked ? "relative flex" : "relative flex shrink-0 gap-1"}>
+      {session.role !== "operator" &&
+        (session.paused ? (
+          <button
+            type="button"
+            onClick={() => void unpauseSession(session.id)}
+            title={`Paused ${untilLabel(session)}. Back to its group, nudges and notifications on`}
+            className={tab ?? "border border-code px-2 text-xs uppercase hover:bg-code hover:text-black hover:[text-shadow:none]"}
+          >
+            unpause
+          </button>
+        ) : (
+          session.status !== "closed" && (
+            <PauseMenu
+              ids={[session.id]}
+              className={tab ? "flex-1 border-l border-code-dark first:border-l-0" : ""}
+              buttonClass={tab ? "w-full py-1.5 text-xs uppercase hover:bg-code-dark/60" : undefined}
+            />
+          )
+        ))}
+      <TermButton s={session} className={tab ?? undefined} />
+      {session.live && <EndSessionButton sessionId={session.id} onEnded={onClose} className={tab ?? undefined} />}
+      <button type="button" onClick={onClose} className={tab ?? "border border-code-dim px-2 text-xs uppercase hover:border-code"}>
+        esc
+      </button>
+    </div>
+  );
+
   const [width, setWidth] = useState(savedWidth);
   const resizing = useRef(false);
   // Images dropped anywhere on the panel wait in the reply box.
@@ -278,55 +332,40 @@ export function SessionDetail({ session, onClose, decisions = [] }: { session: S
           onPointerDown={startResize}
           className="absolute inset-y-0 -left-1 z-10 hidden w-2 cursor-col-resize hover:bg-code/40 md:block"
         />
-        <header className="space-y-1 border-b border-code-dim p-2">
-          <div className="truncate text-sm font-bold">
-            {session.project}
-            {session.branch && <span className="font-normal text-code-dim"> {session.branch}</span>}
-          </div>
-          {/* Its own row, so the buttons never squeeze the branch name. */}
-          <div className="relative flex gap-1">
-            {session.role !== "operator" &&
-              (session.paused ? (
-                <button
-                  type="button"
-                  onClick={() => void unpauseSession(session.id)}
-                  title={`Paused ${untilLabel(session)}. Back to its group, nudges and notifications on`}
-                  className="border border-code px-2 text-xs uppercase hover:bg-code hover:text-black hover:[text-shadow:none]"
-                >
-                  unpause
-                </button>
-              ) : (
-                session.status !== "closed" && <PauseMenu ids={[session.id]} />
-              ))}
-            <TermButton s={session} />
-            {session.live && <EndSessionButton sessionId={session.id} onEnded={onClose} />}
-            <button
-              type="button"
-              onClick={onClose}
-              className="border border-code-dim px-2 text-xs uppercase hover:border-code"
-            >
-              esc
-            </button>
-          </div>
-          <div className="min-w-0 text-xs">
-            {sessionName(session) && <div className="truncate">{sessionName(session)}</div>}
-            {session.topic && <div className="truncate text-code-dim">now: {session.topic}</div>}
-            <div className="truncate text-code-dark" title="Session id: what sop and the transcript call it">
-              {session.id.slice(0, 8)}
-              {session.customTitle && session.title && session.customTitle !== session.title ? ` · started as "${session.title}"` : ""}
+        <header className="@container border-b border-code-dim">
+          {/* The buttons sit top right of the title, or get their own bar across the top
+              when they'd squeeze the branch name. */}
+          {stacked && <div className="border-b border-code-dim">{buttons}</div>}
+          <div className="space-y-1 p-2">
+            <div ref={titleRow} className="flex items-start gap-2">
+              <div className="min-w-0 flex-1 truncate text-sm font-bold">
+                <span ref={titleText}>
+                  {session.project}
+                  {session.branch && <span className="font-normal text-code-dim"> {session.branch}</span>}
+                </span>
+              </div>
+              {!stacked && buttons}
             </div>
-            <RefList refs={focus.own} className="my-1" />
-            {focus.mentioned.length > 0 && (
-              <details className="my-1 text-code-dim">
-                <summary className="cursor-pointer">
-                  mentioned {focus.mentioned.length}
-                </summary>
-                <RefList refs={focus.mentioned} className="mt-1 opacity-70" />
-              </details>
-            )}
-            <div className="truncate text-code-dim">
-              {session.paused && <span className="text-white">paused {untilLabel(session)} · </span>}
-              {session.status === "closed" ? closedOutcome(session).text : session.statusDetail} · {session.cwd}
+            <div className="min-w-0 text-xs">
+              {sessionName(session) && <div className="truncate">{sessionName(session)}</div>}
+              {session.topic && <div className="truncate text-code-dim">now: {session.topic}</div>}
+              <div className="truncate text-code-dark" title="Session id: what sop and the transcript call it">
+                {session.id.slice(0, 8)}
+                {session.customTitle && session.title && session.customTitle !== session.title ? ` · started as "${session.title}"` : ""}
+              </div>
+              <RefList refs={focus.own} className="my-1" />
+              {focus.mentioned.length > 0 && (
+                <details className="my-1 text-code-dim">
+                  <summary className="cursor-pointer">
+                    mentioned {focus.mentioned.length}
+                  </summary>
+                  <RefList refs={focus.mentioned} className="mt-1 opacity-70" />
+                </details>
+              )}
+              <div className="truncate text-code-dim">
+                {session.paused && <span className="text-white">paused {untilLabel(session)} · </span>}
+                {session.status === "closed" ? closedOutcome(session).text : session.statusDetail} · {session.cwd}
+              </div>
             </div>
           </div>
         </header>
@@ -393,7 +432,7 @@ export function SessionDetail({ session, onClose, decisions = [] }: { session: S
 
 // Exits Claude and closes its iTerm tab or tmux pane. Ending asks first what to clean up: servers it left running, its worktree and branch,
 // its scratch folder. The server exits the session, then does only what's ticked.
-function EndSessionButton({ sessionId, onEnded }: { sessionId: string; onEnded: () => void }) {
+function EndSessionButton({ sessionId, onEnded, className }: { sessionId: string; onEnded: () => void; className?: string }) {
   const [items, setItems] = useState<CleanupItem[] | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [open, setOpen] = useState(false);
@@ -453,12 +492,16 @@ function EndSessionButton({ sessionId, onEnded }: { sessionId: string; onEnded: 
         disabled={busy}
         onClick={() => (open ? setOpen(false) : void openChecklist())}
         title="Exit Claude, close its tab or pane, and clean up what it left"
-        className={`border px-2 text-xs uppercase ${open ? "border-fail bg-fail font-bold text-black [text-shadow:none]" : "border-code-dim text-fail hover:border-fail"}`}
+        className={
+          className
+            ? `${className} ${open ? "bg-fail font-bold text-black [text-shadow:none]" : "text-fail"}`
+            : `border px-2 text-xs uppercase ${open ? "border-fail bg-fail font-bold text-black [text-shadow:none]" : "border-code-dim text-fail hover:border-fail"}`
+        }
       >
         end session
       </button>
       {open && (
-        <div className="absolute left-0 top-full z-30 mt-1 w-[min(32rem,calc(100%-1rem))] border border-fail bg-black p-2 text-left text-xs shadow-lg">
+        <div className="absolute right-0 top-full z-30 mt-1 w-[min(32rem,100cqw)] border border-fail bg-black p-2 text-left text-xs shadow-lg">
           {failed.length > 0 ? (
             <>
               <p className="font-bold uppercase text-fail">Ended, but some cleanup didn't happen</p>

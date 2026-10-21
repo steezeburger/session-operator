@@ -2,8 +2,9 @@ import { useState } from "react";
 import type { Session } from "../../server/types.ts";
 
 // Brings the session's iTerm tab or tmux pane to the front. Only for a live session with a
-// terminal; a failure turns it red for a moment with the reason in its tooltip.
-export function TermButton({ s }: { s: Session }) {
+// terminal; a failure turns it red for a moment with the reason in its tooltip. `className`
+// replaces the bordered look, for a tab bar.
+export function TermButton({ s, className }: { s: Session; className?: string }) {
   const [error, setError] = useState<string | null>(null);
   if (!s.live || !s.terminal) return null;
 
@@ -25,7 +26,11 @@ export function TermButton({ s }: { s: Session }) {
       }}
       onKeyDown={(e) => e.stopPropagation()}
       title={error ?? `Bring its ${s.terminal === "tmux" ? "tmux pane" : "iTerm tab"} to the front`}
-      className={`border px-1.5 text-xs uppercase leading-tight ${error ? "border-fail text-fail" : "border-code-dim hover:border-code"}`}
+      className={
+        className
+          ? `${className} ${error ? "text-fail" : ""}`
+          : `border px-1.5 text-xs uppercase leading-tight ${error ? "border-fail text-fail" : "border-code-dim hover:border-code"}`
+      }
     >
       term
     </button>

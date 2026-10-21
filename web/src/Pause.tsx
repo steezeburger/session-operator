@@ -32,8 +32,21 @@ export function untilLabel(s: Session, now = Date.now()): string {
   return `until ${at.toLocaleDateString([], { month: "short", day: "numeric" }).toLowerCase()} ${time}`;
 }
 
-/** A "pause" button with the presets under it. Pauses every id in `ids` on pick. */
-export function PauseMenu({ ids, label = "pause", className = "" }: { ids: string[]; label?: string; className?: string }) {
+/**
+ * A "pause" button with the presets under it. Pauses every id in `ids` on pick. `buttonClass`
+ * replaces the button's border and sizing, for a tab bar.
+ */
+export function PauseMenu({
+  ids,
+  label = "pause",
+  className = "",
+  buttonClass = "border px-2 text-xs uppercase",
+}: {
+  ids: string[];
+  label?: string;
+  className?: string;
+  buttonClass?: string;
+}) {
   const [open, setOpen] = useState(false);
   const box = useRef<HTMLSpanElement>(null);
 
@@ -60,7 +73,7 @@ export function PauseMenu({ ids, label = "pause", className = "" }: { ids: strin
         type="button"
         onClick={() => setOpen((o) => !o)}
         title="Put it off: no nudges or notifications, listed under Paused"
-        className={`border px-2 text-xs uppercase ${open ? "border-code bg-code text-black [text-shadow:none]" : "border-code-dim text-code-dim hover:border-code hover:text-code"}`}
+        className={`${buttonClass} ${open ? "border-code bg-code text-black [text-shadow:none]" : "border-code-dim text-code-dim hover:border-code hover:text-code"}`}
       >
         {label} ▾
       </button>
