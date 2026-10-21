@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Behavior, OperatorState, PendingDecision, PermissionUpdate, Session, SessionStatus } from "../../server/types.ts";
+import { setFavicon } from "./favicon.ts";
 import { MatrixRain } from "./MatrixRain.tsx";
 import { closedOutcome, focusRefs, RefLink, RefList, WithMentions } from "./Refs.tsx";
 import { ReplyBox } from "./ReplyBox.tsx";
@@ -519,6 +520,12 @@ export function App() {
   const pendingFor = (id: string) => pending.filter((p) => p.sessionId === id);
   const groups = GROUPS.map((g) => ({ ...g, rows: sessions.filter((s) => g.statuses.includes(s.status)) }));
   const nothingActive = state && approvals.length === 0 && groups.every((g) => g.rows.length === 0);
+  // The tab icon goes amber, and the title counts, while anything waits on you.
+  const needsCount =
+    (groups.find((g) => g.key === "needs")?.rows.length ?? 0) +
+    approvals.length +
+    operators.filter((s) => s.status === "waiting" || pending.some((p) => p.sessionId === s.id)).length;
+  useEffect(() => setFavicon(needsCount), [needsCount]);
 
   return (
     <main className="mx-auto max-w-6xl px-4 pb-4">
