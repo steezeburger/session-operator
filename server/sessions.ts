@@ -4,7 +4,7 @@ import { basename, join } from "node:path";
 import { countMentions } from "./refs.ts";
 import type { FeedItem, Session, SessionStatus } from "./types.ts";
 
-const PROJECTS_DIR = join(homedir(), ".claude", "projects");
+export const PROJECTS_DIR = join(homedir(), ".claude", "projects");
 const LOOKBACK_MS = 24 * 60 * 60 * 1000;
 const TAIL_BYTES = 256 * 1024;
 const STALE_WORKING_MS = 10 * 60 * 1000;

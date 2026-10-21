@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { type CSSProperties, type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import type { Behavior, OperatorState, PendingDecision, PermissionUpdate, Session, SessionStatus } from "../../server/types.ts";
 import { setFavicon } from "./favicon.ts";
 import { MatrixRain } from "./MatrixRain.tsx";
@@ -63,8 +64,9 @@ function useOperatorState() {
     const events = new EventSource("/api/events");
     events.addEventListener("change", () => void refresh());
     events.onerror = () => setOffline(true);
-    // Transcripts change without hook events, so poll as well.
-    const poll = setInterval(() => void refresh(), 5000);
+    // The server pushes a change for every hook event and transcript write. This only catches what
+    // a dropped connection or a missed file event let slip.
+    const poll = setInterval(() => void refresh(), 30_000);
     return () => {
       events.close();
       clearInterval(poll);
@@ -74,9 +76,220 @@ function useOperatorState() {
   return { state, offline, refresh };
 }
 
-function GroupHeader({ title, count, color }: { title: string; count: number; color: string }) {
+// How long a row that's about to move shades in for, and how long the pointer has to rest before
+// the list may change under it.
+const COUNT_MS = 700;
+const QUIET_MS = 500;
+// The longest the list waits on you, so a missed pointerup or a forgotten draft can't freeze it.
+const MAX_HOLD_MS = 4000;
+
+/** Names a list element so it slides, fades or morphs between snapshots instead of jumping. */
+function vt(name: string): CSSProperties {
+  return { viewTransitionName: name.replace(/[^\w-]/g, "_") };
+}
+
+// Where each row lives in the list: the group (or section) it's drawn in, by id.
+function placements(st: OperatorState): Map<string, string> {
+  const v = sortState(st);
+  const at = new Map<string, string>();
+  for (const p of v.approvals) at.set(p.id, "approve");
+  for (const g of v.groups) for (const s of g.rows) at.set(s.id, g.key);
+  for (const s of v.idle) at.set(s.id, "idle");
+  for (const s of v.closed) at.set(s.id, "closed");
+  return at;
+}
+
+const PLACE_NAMES: Record<string, string> = {
+  approve: "approve",
+  ...Object.fromEntries(GROUPS.map((g) => [g.key, g.title.toLowerCase()])),
+  idle: "idle",
+  closed: "closed",
+};
+
+// Over a row a held update will move to another group, or drop, so you don't aim at it. The
+// shade sweeps in from the left over COUNT_MS (`useCalmState`), then stays until the row moves. An overlay, not opacity: the pulsing "needs you" stripe drowns out a plain dim.
+function Leaving({ to }: { to: string | undefined }) {
+  if (to === undefined) return null;
   return (
-    <h2 className="mb-1 flex items-center gap-2 text-xs font-bold uppercase tracking-widest">
+    <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-end px-2 outline-1 outline-offset-1 outline-dashed outline-code-dim">
+      <div data-countdown className="absolute inset-0 origin-left scale-x-0 bg-black/60 motion-reduce:scale-x-100" />
+      <span className="relative border border-code-dim bg-black px-1.5 text-xs font-bold uppercase text-code-dim [text-shadow:none]">→ {to}</span>
+    </div>
+  );
+}
+
+// Where each thing sits in the list. Other changes (text, times, a status within its group) land
+// without a transition.
+function layoutKey(st: OperatorState) {
+  const v = sortState(st);
+  const ids = (xs: { id: string }[]) => xs.map((x) => x.id);
+  return JSON.stringify([ids(v.approvals), v.groups.map((g) => ids(g.rows)), ids(v.idle), ids(v.closed), ids(v.pending)]);
+}
+
+/**
+ * The state the session list draws from. An update that moves rows first shades those rows in
+ * over COUNT_MS (`leaving` names them, and where to), then lands animated once you've stopped
+ * aiming at the list: pointer still and no scroll for QUIET_MS, no button held, nothing typed in
+ * it. Text-only updates just wait for that.
+ */
+function useCalmState(live: OperatorState | null, list: RefObject<HTMLElement | null>, animate: boolean) {
+  const [shown, setShown] = useState(live);
+  const [settled, setSettled] = useState(true);
+  // Starts the shade for rows not shaded yet.
+  const countRef = useRef<() => void>(() => {});
+  // The rows shaded now, and the ones shaded when the count last started: a move lands only once
+  // every row it moves has been shaded.
+  const shading = useRef(new Set<string>());
+  const counted = useRef(new Set<string>());
+
+  useEffect(() => {
+    const el = list.current;
+    if (!el) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let down = false;
+    let aimedAt = -Infinity;
+    let countEnds = 0;
+    let heldSince = 0;
+    const typing = () => {
+      const a = document.activeElement;
+      return (a instanceof HTMLTextAreaElement || a instanceof HTMLInputElement) && el.contains(a) && a.value !== "";
+    };
+    const check = () => {
+      clearTimeout(timer);
+      const now = performance.now();
+      const wait = Math.max(countEnds - now, aimedAt + QUIET_MS - now, down || typing() ? QUIET_MS : 0);
+      const left = heldSince + MAX_HOLD_MS - now;
+      if (wait > 0 && left > 0) timer = setTimeout(check, Math.min(wait, left));
+      else {
+        heldSince = 0;
+        down = false;
+        setSettled(true);
+      }
+    };
+    const hold = () => {
+      if (!heldSince) heldSince = performance.now();
+      setSettled(false);
+    };
+    const aim = () => {
+      aimedAt = performance.now();
+      hold();
+      check();
+    };
+    // Runs once per shade; one already full stays full, so moving the pointer never replays it.
+    const count = () => {
+      counted.current = new Set(shading.current);
+      countEnds = performance.now() + COUNT_MS;
+      hold();
+      if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        for (const shade of el.querySelectorAll("[data-countdown]")) {
+          if (shade.getAnimations().length === 0) {
+            shade.animate([{ scale: "0 1" }, { scale: "1 1" }], { duration: COUNT_MS, fill: "forwards" });
+          }
+        }
+      }
+      check();
+    };
+    const press = () => {
+      down = true;
+      aim();
+    };
+    const release = () => {
+      down = false;
+    };
+    countRef.current = count;
+    el.addEventListener("pointermove", aim);
+    el.addEventListener("pointerdown", press);
+    el.addEventListener("input", aim);
+    window.addEventListener("pointerup", release);
+    window.addEventListener("pointercancel", release);
+    window.addEventListener("scroll", aim, { passive: true });
+    window.addEventListener("blur", release);
+    return () => {
+      clearTimeout(timer);
+      el.removeEventListener("pointermove", aim);
+      el.removeEventListener("pointerdown", press);
+      el.removeEventListener("input", aim);
+      window.removeEventListener("pointerup", release);
+      window.removeEventListener("pointercancel", release);
+      window.removeEventListener("scroll", aim);
+      window.removeEventListener("blur", release);
+    };
+  }, [list]);
+
+  useEffect(() => {
+    if (!live || live === shown) return;
+    const moves = shown && layoutKey(live) !== layoutKey(shown);
+    // Shade a move's rows the moment it arrives, aiming or not.
+    if (moves && ![...movedRows(shown, live).keys()].every((id) => counted.current.has(id))) {
+      countRef.current();
+      return;
+    }
+    if (shown && !settled) return;
+    if (shown && JSON.stringify(live) === JSON.stringify(shown)) return;
+    if (moves) counted.current = new Set();
+    const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (moves && animate && !still && document.startViewTransition) document.startViewTransition(() => flushSync(() => setShown(live)));
+    else setShown(live);
+  }, [live, shown, settled, animate]);
+
+  // Row id -> where it's going.
+  const leaving = live && shown ? movedRows(shown, live) : new Map<string, string>();
+  shading.current = new Set(leaving.keys());
+  return { shown, leaving };
+}
+
+// The state as it will be once the server catches up on what you just answered: those sessions
+// back at work, those approvals gone. So your own answer moves its row without waiting on a poll.
+function withSent(st: OperatorState | null, sent: Set<string>): OperatorState | null {
+  if (!st || sent.size === 0) return st;
+  return {
+    pending: st.pending.filter((p) => !sent.has(p.id) && !sent.has(p.sessionId)),
+    sessions: st.sessions.map((s) =>
+      sent.has(s.id) && (s.status === "waiting" || s.status === "done") ? { ...s, status: "working" as const } : s,
+    ),
+  };
+}
+
+// Rows that sit somewhere else in `next`, or not at all: id -> where they go.
+function movedRows(cur: OperatorState, next: OperatorState) {
+  const to = placements(next);
+  const moved = new Map<string, string>();
+  for (const [id, at] of placements(cur)) {
+    const dest = to.get(id);
+    if (dest !== at) moved.set(id, dest ? (PLACE_NAMES[dest] ?? dest) : "gone");
+  }
+  return moved;
+}
+
+// Everything the page shows, sorted into where it goes.
+function sortState(state: OperatorState | null, query = "") {
+  const all = state?.sessions ?? [];
+  // The running operator gets its own strip; the rest are the sessions it runs.
+  const operators = all.filter((s) => s.role === "operator" && s.live);
+  const everyone = all.filter((s) => !operators.includes(s));
+  // What the filter lets through. Groups list those; `allGroups` counts everyone.
+  const sessions = everyone.filter((s) => sessionMatches(s, query));
+  const pending = state?.pending ?? [];
+  const operatorIds = new Set(operators.map((s) => s.id));
+  const grouped = (from: Session[]) => GROUPS.map((g) => ({ ...g, rows: from.filter((s) => g.statuses.includes(s.status)) }));
+  return {
+    all,
+    operators,
+    everyone,
+    sessions,
+    pending,
+    idle: sessions.filter((s) => s.status === "idle"),
+    closed: sessions.filter((s) => s.status === "closed"),
+    // Approvals show inside their session's card. Only one whose session isn't listed gets its own.
+    approvals: pending.filter((p) => !operatorIds.has(p.sessionId) && !everyone.some((s) => s.id === p.sessionId)),
+    groups: grouped(sessions),
+    allGroups: grouped(everyone),
+  };
+}
+
+function GroupHeader({ name, title, count, color }: { name: string; title: string; count: number; color: string }) {
+  return (
+    <h2 style={vt(`g-${name}`)} className="mb-1 flex items-center gap-2 text-xs font-bold uppercase tracking-widest">
       <span className={`inline-block h-2.5 w-2.5 ${color}`} />
       {">"} {title} [{count}]
     </h2>
@@ -261,7 +474,7 @@ function repoName(s: Session) {
   return s.cwd.match(/\/([^/]+)\/\.worktrees\//)?.[1] ?? s.project;
 }
 
-function SessionRow({ s, now, onOpen }: { s: Session; now: number; onOpen: () => void }) {
+function SessionRow({ s, now, leaving, onOpen }: { s: Session; now: number; leaving: string | undefined; onOpen: () => void }) {
   const style = STATUS_STYLE[s.status];
   const { own: refs } = focusRefs(s);
   const outcome = s.status === "closed" ? closedOutcome(s) : null;
@@ -275,7 +488,8 @@ function SessionRow({ s, now, onOpen }: { s: Session; now: number; onOpen: () =>
       tabIndex={0}
       onClick={onOpen}
       onKeyDown={(e) => e.key === "Enter" && onOpen()}
-      className="grid w-full cursor-pointer grid-cols-[5.5rem_1fr_2.5rem] items-stretch text-left text-xs leading-tight hover:bg-code-dark/50 md:grid-cols-[5.5rem_15rem_1fr_14rem_2.5rem]"
+      style={vt(`s-${s.id}`)}
+      className="relative grid w-full cursor-pointer grid-cols-[5.5rem_1fr_2.5rem] items-stretch text-left text-xs leading-tight hover:bg-code-dark/50 md:grid-cols-[5.5rem_15rem_1fr_14rem_2.5rem]"
     >
       <div className={`px-1.5 py-0.5 font-bold ${style.block}`}>{style.label}</div>
       <div className="min-w-0 truncate px-1.5 py-0.5" title={`${s.cwd}${s.branch ? ` (${s.branch})` : ""}`}>
@@ -304,6 +518,7 @@ function SessionRow({ s, now, onOpen }: { s: Session; now: number; onOpen: () =>
         {next}
       </div>
       <div className="px-1.5 py-0.5 text-right text-code-dim">{ago(s.lastActivity, now)}</div>
+      <Leaving to={leaving} />
     </div>
   );
 }
@@ -415,14 +630,18 @@ function NeedsYouCard({
   s,
   now,
   pending,
+  leaving,
   onOpen,
   onDecide,
+  onSent,
 }: {
   s: Session;
   now: number;
   pending: PendingDecision[];
+  leaving: string | undefined;
   onOpen: () => void;
   onDecide: (id: string, b: Behavior, extra?: DecideExtra) => void;
+  onSent: () => void;
 }) {
   const action = nextStep(s);
   const focus = focusRefs(s);
@@ -431,7 +650,8 @@ function NeedsYouCard({
       tabIndex={0}
       onClick={onOpen}
       onKeyDown={(e) => e.key === "Enter" && onOpen()}
-      className="glow-needs flex cursor-pointer border border-needs bg-black/85 hover:bg-code-dark/30"
+      style={vt(`s-${s.id}`)}
+      className="glow-needs relative flex cursor-pointer border border-needs bg-black/85 hover:bg-code-dark/30"
     >
       <div className="pulse w-2 shrink-0 bg-needs" />
       <div className="min-w-0 flex-1 p-2">
@@ -478,17 +698,30 @@ function NeedsYouCard({
             claude: {s.lastReply}
           </p>
         )}
-        {s.live && pending.length === 0 && <ReplyBox sessionId={s.id} says={s.nextSays} />}
+        {s.live && pending.length === 0 && <ReplyBox sessionId={s.id} says={s.nextSays} onSent={onSent} />}
       </div>
+      <Leaving to={leaving} />
     </article>
   );
 }
 
-function SessionTable({ sessions, now, onOpen }: { sessions: Session[]; now: number; onOpen: (id: string) => void }) {
+function SessionTable({
+  name,
+  sessions,
+  now,
+  leaving,
+  onOpen,
+}: {
+  name: string;
+  sessions: Session[];
+  now: number;
+  leaving: Map<string, string>;
+  onOpen: (id: string) => void;
+}) {
   return (
-    <div className={`${BORDER} glow divide-y divide-code-dark bg-black/85`}>
+    <div style={vt(`t-${name}`)} className={`${BORDER} glow divide-y divide-code-dark bg-black/85`}>
       {sessions.map((s) => (
-        <SessionRow key={s.id} s={s} now={now} onOpen={() => onOpen(s.id)} />
+        <SessionRow key={s.id} s={s} now={now} leaving={leaving.get(s.id)} onOpen={() => onOpen(s.id)} />
       ))}
     </div>
   );
@@ -516,31 +749,46 @@ export function App() {
   }, [openId]);
 
   const decide = async (id: string, behavior: Behavior, extra?: DecideExtra) => {
-    await fetch(`/api/decisions/${id}`, {
+    const res = await fetch(`/api/decisions/${id}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ behavior, ...extra }),
-    });
+    }).catch(() => null);
     void refresh();
+    return res?.ok ?? false;
   };
 
-  const all = state?.sessions ?? [];
-  // The running operator gets its own strip; the rest are the sessions it runs.
-  const operators = all.filter((s) => s.role === "operator" && s.live);
-  const everyone = all.filter((s) => !operators.includes(s));
-  // The filter narrows what's listed; the tab icon and counts still see everyone.
-  const sessions = everyone.filter((s) => sessionMatches(s, query));
-  const idle = sessions.filter((s) => s.status === "idle");
-  const closed = sessions.filter((s) => s.status === "closed");
-  const pending = state?.pending ?? [];
-  const operatorIds = new Set(operators.map((s) => s.id));
-  // Approvals show inside their session's card. Only one whose session isn't listed gets its own.
-  const approvals = pending.filter((p) => !operatorIds.has(p.sessionId) && !everyone.some((s) => s.id === p.sessionId));
+  // Sessions and approvals you just answered. Dropped once the server agrees they've moved, or
+  // after a while if it never does (then the row moves back).
+  const [sent, setSent] = useState(new Set<string>());
+  const markSent = useCallback((id: string) => {
+    setSent((cur) => new Set(cur).add(id));
+    setTimeout(() => setSent((cur) => {
+      const next = new Set(cur);
+      next.delete(id);
+      return next;
+    }), 10_000);
+  }, []);
+
+  // The header, operator strip and panel are pinned, so they stay live. The list below holds
+  // still while you're aiming at it.
+  const listRef = useRef<HTMLDivElement>(null);
+  // The filter narrows what's listed; the tab icon, counts and lone approvals still see everyone.
+  const { all, operators, everyone, sessions, pending, approvals, allGroups } = sortState(state, query);
   const openSession = all.find((s) => s.id === openId);
-  const pendingFor = (id: string) => pending.filter((p) => p.sessionId === id);
-  const groups = GROUPS.map((g) => ({ ...g, rows: sessions.filter((s) => g.statuses.includes(s.status)) }));
-  const allGroups = GROUPS.map((g) => ({ ...g, rows: everyone.filter((s) => g.statuses.includes(s.status)) }));
-  const nothingActive = state && approvals.length === 0 && groups.every((g) => g.rows.length === 0);
+  // No animation behind the panel: the snapshots would draw over it.
+  const answered = useMemo(() => withSent(state, sent), [state, sent]);
+  const { shown, leaving } = useCalmState(answered, listRef, !openId);
+  const list = sortState(shown, query);
+  useEffect(() => {
+    const at = state ? placements(state) : new Map<string, string>();
+    setSent((cur) => {
+      const next = new Set([...cur].filter((id) => at.get(id) === "needs" || at.get(id) === "approve"));
+      return next.size === cur.size ? cur : next;
+    });
+  }, [state]);
+  const pendingFor = (id: string) => list.pending.filter((p) => p.sessionId === id);
+  const nothingActive = shown && list.approvals.length === 0 && list.groups.every((g) => g.rows.length === 0);
   // The tab icon goes amber, and the title counts, while anything waits on you.
   const needsCount =
     (allGroups.find((g) => g.key === "needs")?.rows.length ?? 0) +
@@ -551,7 +799,8 @@ export function App() {
   return (
     <main className="mx-auto max-w-6xl px-4 pb-4">
       <MatrixRain />
-      <div className="sticky top-0 z-20 bg-black pb-2 pt-4">
+      {/* Named so rows mid-transition stay under it, not drawn on top. */}
+      <div style={vt("deck-header")} className="sticky top-0 z-20 bg-black pb-2 pt-4">
         <header className={`${BORDER} glow flex items-baseline justify-between bg-black/85 px-2 py-1`}>
           <h1 className="cursor shrink-0 text-sm font-bold uppercase tracking-widest">Session operator</h1>
           <input
@@ -593,68 +842,82 @@ export function App() {
         )}
       </div>
 
-      {approvals.length > 0 && (
-        <section className="mt-6">
-          <GroupHeader title="Approve?" count={approvals.length} color="bg-needs" />
-          <div className="space-y-2">
-            {approvals.map((p) => (
-              <PendingCard key={p.id} p={p} now={now} onDecide={(b, a) => void decide(p.id, b, a)} />
-            ))}
-          </div>
-        </section>
-      )}
-
-      {groups
-        .filter((g) => g.rows.length > 0)
-        .map((g) => (
-          <section key={g.key} className="mt-6">
-            <GroupHeader title={g.title} count={g.rows.length} color={g.color} />
-            {g.key === "needs" ? (
-              <div className="space-y-2">
-                {g.rows.map((s) => (
-                  <NeedsYouCard
-                    key={s.id}
-                    s={s}
+      <div ref={listRef}>
+        {list.approvals.length > 0 && (
+          <section className="mt-6">
+            <GroupHeader name="approve" title="Approve?" count={list.approvals.length} color="bg-needs" />
+            <div className="space-y-2">
+              {list.approvals.map((p) => (
+                <div key={p.id} style={vt(`p-${p.id}`)} className="relative">
+                  <PendingCard
+                    p={p}
                     now={now}
-                    pending={pendingFor(s.id)}
-                    onOpen={() => setOpenId(s.id)}
-                    onDecide={(id, b, x) => void decide(id, b, x)}
+                    onDecide={(b, a) => void decide(p.id, b, a).then((ok) => ok && markSent(p.id))}
                   />
-                ))}
-              </div>
-            ) : (
-              <SessionTable sessions={g.rows} now={now} onOpen={setOpenId} />
-            )}
+                  <Leaving to={leaving.get(p.id)} />
+                </div>
+              ))}
+            </div>
           </section>
-        ))}
+        )}
 
-      {query && sessions.length === 0 ? (
-        <p className={`${BORDER} mt-6 border-dashed bg-black/85 p-3 text-center text-sm`}>no session matches "{query}"</p>
-      ) : (
-        nothingActive && !query && (
-          <p className={`${BORDER} mt-6 border-dashed bg-black/85 p-3 text-center text-sm`}>wake up... nothing is running</p>
-        )
-      )}
+        {list.groups
+          .filter((g) => g.rows.length > 0)
+          .map((g) => (
+            <section key={g.key} className="mt-6">
+              <GroupHeader name={g.key} title={g.title} count={g.rows.length} color={g.color} />
+              {g.key === "needs" ? (
+                <div className="space-y-2">
+                  {g.rows.map((s) => (
+                    <NeedsYouCard
+                      key={s.id}
+                      s={s}
+                      now={now}
+                      pending={pendingFor(s.id)}
+                      leaving={leaving.get(s.id)}
+                      onOpen={() => setOpenId(s.id)}
+                      // Its last approval answered, it goes back to work.
+                      onDecide={(id, b, x) =>
+                        void decide(id, b, x).then((ok) => ok && pendingFor(s.id).length === 1 && markSent(s.id))
+                      }
+                      onSent={() => markSent(s.id)}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <SessionTable name={g.key} sessions={g.rows} now={now} leaving={leaving} onOpen={setOpenId} />
+              )}
+            </section>
+          ))}
 
-      {idle.length > 0 && (
-        <details className="mt-6">
-          <summary className="mb-1 cursor-pointer text-xs font-bold uppercase tracking-widest text-code-dim">
-            <span className="mr-2 inline-block h-2.5 w-2.5 bg-code-dark align-middle" />
-            Idle [{idle.length}]
-          </summary>
-          <SessionTable sessions={idle} now={now} onOpen={setOpenId} />
-        </details>
-      )}
+        {query && list.sessions.length === 0 ? (
+          <p style={vt("empty")} className={`${BORDER} mt-6 border-dashed bg-black/85 p-3 text-center text-sm`}>no session matches "{query}"</p>
+        ) : (
+          nothingActive && (
+            <p style={vt("empty")} className={`${BORDER} mt-6 border-dashed bg-black/85 p-3 text-center text-sm`}>wake up... nothing is running</p>
+          )
+        )}
 
-      {closed.length > 0 && (
-        <details className="mt-4">
-          <summary className="mb-1 cursor-pointer text-xs font-bold uppercase tracking-widest text-code-dim">
-            <span className="mr-2 inline-block h-2.5 w-2.5 border border-code-dim align-middle" />
-            Closed, last 24h [{closed.length}]
-          </summary>
-          <SessionTable sessions={closed} now={now} onOpen={setOpenId} />
-        </details>
-      )}
+        {list.idle.length > 0 && (
+          <details className="mt-6">
+            <summary style={vt("g-idle")} className="mb-1 cursor-pointer text-xs font-bold uppercase tracking-widest text-code-dim">
+              <span className="mr-2 inline-block h-2.5 w-2.5 bg-code-dark align-middle" />
+              Idle [{list.idle.length}]
+            </summary>
+            <SessionTable name="idle" sessions={list.idle} now={now} leaving={leaving} onOpen={setOpenId} />
+          </details>
+        )}
+
+        {list.closed.length > 0 && (
+          <details className="mt-4">
+            <summary style={vt("g-closed")} className="mb-1 cursor-pointer text-xs font-bold uppercase tracking-widest text-code-dim">
+              <span className="mr-2 inline-block h-2.5 w-2.5 border border-code-dim align-middle" />
+              Closed, last 24h [{list.closed.length}]
+            </summary>
+            <SessionTable name="closed" sessions={list.closed} now={now} leaving={leaving} onOpen={setOpenId} />
+          </details>
+        )}
+      </div>
 
       {openSession && (
         <SessionDetail
