@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Behavior, OperatorState, PendingDecision, PermissionUpdate, Session, SessionStatus } from "../../server/types.ts";
 import { setFavicon } from "./favicon.ts";
 import { MatrixRain } from "./MatrixRain.tsx";
-import { closedOutcome, focusRefs, RefLink, RefList, sessionMatches, sessionName, WithMentions } from "./Refs.tsx";
+import { closedOutcome, focusRefs, RefLink, RefList, sessionMatches, sessionName } from "./Refs.tsx";
+import { WithPaths } from "./Paths.tsx";
 import { ReplyBox } from "./ReplyBox.tsx";
 import { SessionDetail } from "./SessionDetail.tsx";
 
@@ -400,10 +401,10 @@ function WithCode({ text, s }: { text: string; s: Session }) {
       {text.split(/(`[^`]+`)/).map((part, i) =>
         part.startsWith("`") && part.endsWith("`") && part.length > 2 ? (
           <code key={i} className="bg-code-dark px-1 normal-case text-white [text-shadow:0_0_4px_rgb(214_255_223/0.6)]">
-            {part.slice(1, -1)}
+            <WithPaths text={part.slice(1, -1)} s={s} />
           </code>
         ) : (
-          <WithMentions key={i} text={part} s={s} />
+          <WithPaths key={i} text={part} s={s} />
         ),
       )}
     </>

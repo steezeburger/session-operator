@@ -1,6 +1,7 @@
 import { type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { CleanupItem, CleanupResult, FeedItem, Session } from "../../server/types.ts";
-import { closedOutcome, focusRefs, RefList, sessionName, WithMentions } from "./Refs.tsx";
+import { WithPaths } from "./Paths.tsx";
+import { closedOutcome, focusRefs, RefList, sessionName } from "./Refs.tsx";
 import { imageFiles, ReplyBox } from "./ReplyBox.tsx";
 
 // Three voices, all Matrix: you in white on a faint panel, Claude in full glowing green on
@@ -99,7 +100,7 @@ function Linkified({ text, session }: { text: string; session: Session }) {
             {part}
           </a>
         ) : (
-          <WithMentions key={i} text={part} s={session} />
+          <WithPaths key={i} text={part} s={session} />
         ),
       )}
     </>
