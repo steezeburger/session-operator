@@ -1,6 +1,6 @@
-import { type CSSProperties, type ReactNode, type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, Fragment, type ReactNode, type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import type { Behavior, OperatorState, PendingDecision, PermissionUpdate, Session, SessionStatus } from "../../server/types.ts";
+import type { Behavior, Effort, OperatorState, PendingDecision, PermissionUpdate, Session, SessionStatus } from "../../server/types.ts";
 import { setFavicon } from "./favicon.ts";
 import { MatrixRain } from "./MatrixRain.tsx";
 import { closedOutcome, focusRefs, RefLink, RefList, sessionMatches, sessionName } from "./Refs.tsx";
@@ -8,6 +8,7 @@ import { PauseMenu, untilLabel } from "./Pause.tsx";
 import { WithPaths } from "./Paths.tsx";
 import { ReplyBox } from "./ReplyBox.tsx";
 import { SessionDetail } from "./SessionDetail.tsx";
+import { ago, effortOf, type Sort, SortControl, type SortCtx, sortRows, useSort } from "./Sort.tsx";
 
 // Six meanings only: amber = needs the user, red = failing, cyan = waiting on the world (CI, deploy),
 // bright green = running, dark green = idle, outline = closed.
@@ -30,13 +31,6 @@ const GROUPS: { key: string; title: string; statuses: SessionStatus[]; color: st
 ];
 
 const BORDER = "border border-code-dim";
-
-function ago(iso: string, now: number) {
-  const s = Math.max(0, Math.round((now - new Date(iso).getTime()) / 1000));
-  if (s < 60) return `${s}s`;
-  if (s < 3600) return `${Math.round(s / 60)}m`;
-  return `${Math.round(s / 3600)}h`;
-}
 
 function useNow(ms = 1000) {
   const [now, setNow] = useState(Date.now());
@@ -299,20 +293,26 @@ function GroupHeader({
   title,
   count,
   color,
+  lead,
   children,
 }: {
   name: string;
   title: string;
   count: number;
   color: string;
+  /** Goes in the left column's slot on this line: the sort control, on the first header. */
+  lead?: ReactNode;
   children?: ReactNode;
 }) {
   return (
-    <h2 style={vt(`g-${name}`)} className="mb-1 flex items-center gap-2 text-xs font-bold uppercase tracking-widest">
-      <span className={`inline-block h-2.5 w-2.5 ${color}`} />
-      {">"} {title} [{count}]
-      {children && <span className="ml-auto font-normal normal-case tracking-normal">{children}</span>}
-    </h2>
+    <div className="mb-1 flex items-center gap-2">
+      <div className={GUTTER}>{lead}</div>
+      <h2 style={vt(`g-${name}`)} className="flex min-w-0 flex-1 items-center gap-2 text-xs font-bold uppercase tracking-widest">
+        <span className={`inline-block h-2.5 w-2.5 ${color}`} />
+        {">"} {title} [{count}]
+        {children && <span className="ml-auto font-normal normal-case tracking-normal">{children}</span>}
+      </h2>
+    </div>
   );
 }
 
@@ -545,6 +545,8 @@ function SessionRow({ s, now, leaving, onOpen }: { s: Session; now: number; leav
   );
 }
 
+const OPERATOR_INPUT = "operator-input";
+
 // The operator is always just the operator: no card, title or next step borrowed from the
 // sessions it talks about. White is its color and nobody else's. Pinned, so it's one glance
 // and one keystroke away however far down the list you are.
@@ -605,7 +607,7 @@ function OperatorConsole({
             type="button"
             onClick={onOpen}
             title={line}
-            className={`mt-1 block w-full cursor-pointer truncate text-left text-sm ${waiting ? "font-bold text-needs" : busy ? "text-code-dim" : "text-white"}`}
+            className={`mt-1 line-clamp-3 w-full cursor-pointer text-left text-sm ${waiting ? "font-bold text-needs" : busy ? "text-code-dim" : "text-white"}`}
           >
             {"› "}
             <WithCode text={line} s={s} />
@@ -618,7 +620,14 @@ function OperatorConsole({
             ))}
           </div>
         )}
-        {pending.length === 0 && <ReplyBox sessionId={s.id} says={s.nextSays} placeholder="tell the operator (shift+enter for a new line)" />}
+        {pending.length === 0 && (
+          <ReplyBox
+            sessionId={s.id}
+            says={s.nextSays}
+            inputId={OPERATOR_INPUT}
+            placeholder="tell the operator (o to jump here, shift+enter for a new line)"
+          />
+        )}
       </div>
     </article>
   );
@@ -629,6 +638,70 @@ function nextStep(s: Session): string {
   if (s.status === "waiting") return `In its terminal: ${s.statusDetail}`;
   if (s.nextAction) return s.nextAction;
   return s.nextLoading ? "" : "No clear ask - open it to see the last message";
+}
+
+// Four bars, like phone signal, but more bars is more of your time: <1m, under 5m, under 15m, 15m+.
+// Quick ones are green, slow ones amber (red stays for failing), and the heaviest glows.
+// Unlit while it's still being estimated. Hover for the why.
+const EFFORT_STEPS = [1, 5, 15];
+
+function effortTime(minutes: number) {
+  return minutes < 1 ? "<1m" : minutes < 60 ? `~${minutes}m` : `~${Math.round(minutes / 30) / 2}h`;
+}
+
+function EffortBars({ effort }: { effort: Effort | null }) {
+  const level = effort ? 1 + EFFORT_STEPS.filter((m) => effort.minutes >= m).length : 0;
+  const lit = level <= 2 ? "bg-code" : level === 3 ? "bg-needs" : "bg-needs shadow-[0_0_6px_rgb(255_176_0/0.9)]";
+  return (
+    <span className="group relative flex items-center gap-1.5 text-xs [text-shadow:none]">
+      <span className="flex h-4 shrink-0 items-end gap-0.5">
+        {[1, 2, 3, 4].map((bar) => (
+          <span key={bar} className={`w-1.5 ${bar <= level ? lit : "bg-code-dark"}`} style={{ height: `${bar * 25}%` }} />
+        ))}
+      </span>
+      {effort && <span className={level >= 3 ? "font-bold text-needs" : "text-code-dim"}>{effortTime(effort.minutes)}</span>}
+      <span className="pointer-events-none absolute left-0 top-full z-20 mt-1 hidden whitespace-nowrap border border-code-dim bg-black px-2 py-1 font-normal text-code-dim group-hover:block">
+        {effort ? (
+          <>
+            <span className={`font-bold ${level >= 3 ? "text-needs" : "text-code"}`}>{effortTime(effort.minutes)}</span>
+            {effort.why && <span className="text-white"> · {effort.why}</span>}
+            <span className="block">rough time to understand and decide, not to click</span>
+          </>
+        ) : (
+          "no estimate yet"
+        )}
+      </span>
+    </span>
+  );
+}
+
+// The left column: one fixed-width cell per row, so whatever it shows lines up down the list.
+const GUTTER = "w-24 shrink-0 sm:w-28";
+// Lines a collapsed group's title up with the rows: the column plus the gap after it.
+const PAST_GUTTER = "ml-[6.5rem] sm:ml-[7.5rem]";
+
+// Needs-you rows always show their effort; any other sort adds its value underneath.
+function NeedsCell({ s, sort, ctx }: { s: Session; sort: Sort; ctx: SortCtx }) {
+  const value = sort.def.key === "effort" ? null : sort.def.cell(s, ctx);
+  return (
+    <div className={`${GUTTER} pt-2 text-xs`}>
+      <EffortBars effort={effortOf(s, ctx.pendingFor(s.id))} />
+      {value && (
+        <div className="mt-1 truncate text-code-dim" title={`${sort.def.label}: ${value}`}>
+          {value}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Table rows are one line: just the sort's value.
+function rowCell(s: Session, sort: Sort, ctx: SortCtx): string {
+  if (sort.def.key === "effort") {
+    const e = effortOf(s, ctx.pendingFor(s.id));
+    return e ? effortTime(e.minutes) : "-";
+  }
+  return sort.def.cell(s, ctx) ?? "-";
 }
 
 // `code` spans from Claude's text, shown as bright chips so commands stand out.
@@ -656,11 +729,13 @@ function NeedsYouCard({
   onOpen,
   onDecide,
   onSent,
+  cell,
 }: {
   s: Session;
   now: number;
   pending: PendingDecision[];
   leaving: string | undefined;
+  cell: ReactNode;
   onOpen: () => void;
   onDecide: (id: string, b: Behavior, extra?: DecideExtra) => void;
   onSent: () => void;
@@ -668,65 +743,67 @@ function NeedsYouCard({
   const action = nextStep(s);
   const focus = focusRefs(s);
   return (
-    <article
-      tabIndex={0}
-      onClick={onOpen}
-      onKeyDown={(e) => e.key === "Enter" && onOpen()}
-      style={vt(`s-${s.id}`)}
-      className="glow-needs relative flex cursor-pointer border border-needs bg-black/85 hover:bg-code-dark/30"
-    >
-      <div className="pulse w-2 shrink-0 bg-needs" />
-      <div className="min-w-0 flex-1 p-2">
-        <div className="flex items-baseline justify-between gap-4 text-xs">
-          <span className="min-w-0 truncate" title={s.cwd}>
-            <span className="font-bold">{repoName(s)}</span>
-            {s.branch && <span className="text-code-dim"> {s.branch}</span>}
-            {sessionName(s) && <span className="text-code-dim"> · {sessionName(s)}</span>}
-            {s.topic && <span className="text-code-dim"> · now: {s.topic}</span>}
-          </span>
-          <span className="flex shrink-0 items-baseline gap-2 text-code-dim">
-            {ago(s.lastActivity, now)} ago
-            <PauseMenu ids={[s.id]} />
-          </span>
+    <div style={vt(`s-${s.id}`)} className="flex gap-2">
+      {cell}
+      <article
+        tabIndex={0}
+        onClick={onOpen}
+        onKeyDown={(e) => e.key === "Enter" && onOpen()}
+        className="glow-needs relative flex min-w-0 flex-1 cursor-pointer border border-needs bg-black/85 hover:bg-code-dark/30"
+      >
+        <div className="pulse w-2 shrink-0 bg-needs" />
+        <div className="min-w-0 flex-1 p-2">
+          <div className="flex items-baseline justify-between gap-4 text-xs">
+            <span className="min-w-0 truncate" title={s.cwd}>
+              <span className="font-bold">{repoName(s)}</span>
+              {s.branch && <span className="text-code-dim"> {s.branch}</span>}
+              {sessionName(s) && <span className="text-code-dim"> · {sessionName(s)}</span>}
+              {s.topic && <span className="text-code-dim"> · now: {s.topic}</span>}
+            </span>
+            <span className="flex shrink-0 items-baseline gap-2 text-code-dim">
+              {ago(s.lastActivity, now)} ago
+              <PauseMenu ids={[s.id]} />
+            </span>
+          </div>
+          <RefList refs={focus.own} className="mt-1" />
+          {pending.length > 0 ? (
+            // Its approvals and questions are the next step, answerable right here.
+            <div onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+              {pending.map((p) => (
+                <PendingCard key={p.id} p={p} now={now} inline onDecide={(b, x) => onDecide(p.id, b, x)} />
+              ))}
+            </div>
+          ) : (
+            <p className="mt-1 text-lg font-bold text-needs [text-shadow:0_0_6px_rgb(255_176_0/0.7)]">
+              {"→ "}
+              {action ? <WithCode text={action} s={s} /> : <span className="cursor text-code-dim">decoding next step</span>}
+            </p>
+          )}
+          {s.nextUrl && (
+            <div className="mt-1 flex flex-wrap items-center gap-2 text-sm">
+              {s.nextUrl && (
+                <a
+                  href={s.nextUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                  className="border border-needs px-2 font-bold text-needs hover:bg-needs hover:text-black hover:[text-shadow:none]"
+                >
+                  open {s.nextUrl.replace(/^https?:\/\//, "")} ↗
+                </a>
+              )}
+            </div>
+          )}
+          {s.lastReply && (
+            <p className="mt-1 truncate text-xs text-code-dim" title={s.lastReply}>
+              claude: {s.lastReply}
+            </p>
+          )}
+          {s.live && pending.length === 0 && <ReplyBox sessionId={s.id} says={s.nextSays} onSent={onSent} />}
         </div>
-        <RefList refs={focus.own} className="mt-1" />
-        {pending.length > 0 ? (
-          // Its approvals and questions are the next step, answerable right here.
-          <div onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
-            {pending.map((p) => (
-              <PendingCard key={p.id} p={p} now={now} inline onDecide={(b, x) => onDecide(p.id, b, x)} />
-            ))}
-          </div>
-        ) : (
-          <p className="mt-1 text-lg font-bold text-needs [text-shadow:0_0_6px_rgb(255_176_0/0.7)]">
-            {"→ "}
-            {action ? <WithCode text={action} s={s} /> : <span className="cursor text-code-dim">decoding next step</span>}
-          </p>
-        )}
-        {s.nextUrl && (
-          <div className="mt-1 flex flex-wrap items-center gap-2 text-sm">
-            {s.nextUrl && (
-              <a
-                href={s.nextUrl}
-                target="_blank"
-                rel="noreferrer"
-                onClick={(e) => e.stopPropagation()}
-                className="border border-needs px-2 font-bold text-needs hover:bg-needs hover:text-black hover:[text-shadow:none]"
-              >
-                open {s.nextUrl.replace(/^https?:\/\//, "")} ↗
-              </a>
-            )}
-          </div>
-        )}
-        {s.lastReply && (
-          <p className="mt-1 truncate text-xs text-code-dim" title={s.lastReply}>
-            claude: {s.lastReply}
-          </p>
-        )}
-        {s.live && pending.length === 0 && <ReplyBox sessionId={s.id} says={s.nextSays} onSent={onSent} />}
-      </div>
-      <Leaving to={leaving} />
-    </article>
+        <Leaving to={leaving} />
+      </article>
+    </div>
   );
 }
 
@@ -736,18 +813,43 @@ function SessionTable({
   now,
   leaving,
   onOpen,
+  sort,
+  ctx,
 }: {
   name: string;
   sessions: Session[];
   now: number;
   leaving: Map<string, string>;
   onOpen: (id: string) => void;
+  sort: Sort;
+  ctx: SortCtx;
 }) {
+  // One grid row per session, so each cell shares its row's height. The table's border and glow
+  // are a box behind the rows' column.
+  const n = sessions.length;
   return (
-    <div style={vt(`t-${name}`)} className={`${BORDER} glow divide-y divide-code-dark bg-black/85`}>
-      {sessions.map((s) => (
-        <SessionRow key={s.id} s={s} now={now} leaving={leaving.get(s.id)} onOpen={() => onOpen(s.id)} />
-      ))}
+    <div className="grid grid-cols-[6rem_1fr] gap-x-2 sm:grid-cols-[7rem_1fr]">
+      <div style={{ ...vt(`t-${name}`), gridColumn: 2, gridRow: `1 / span ${n}` }} className={`${BORDER} glow bg-black/85`} />
+      {sessions.map((s, i) => {
+        const value = rowCell(s, sort, ctx);
+        return (
+          <Fragment key={s.id}>
+            <div
+              style={{ ...vt(`c-${name}-${s.id}`), gridColumn: 1, gridRow: i + 1 }}
+              className="self-center truncate text-xs leading-tight text-code-dim"
+              title={`${sort.def.label}: ${value}`}
+            >
+              {value}
+            </div>
+            <div
+              style={{ gridColumn: 2, gridRow: i + 1 }}
+              className={`mx-px min-w-0 ${i === 0 ? "mt-px" : "border-t border-code-dark"} ${i === n - 1 ? "mb-px" : ""}`}
+            >
+              <SessionRow s={s} now={now} leaving={leaving.get(s.id)} onOpen={() => onOpen(s.id)} />
+            </div>
+          </Fragment>
+        );
+      })}
     </div>
   );
 }
@@ -760,13 +862,19 @@ export function App() {
   const [query, setQuery] = useState("");
   const filterBox = useRef<HTMLInputElement>(null);
 
-  // "/" jumps to the filter, like most lists that have one.
+  // "/" jumps to the filter, like most lists that have one. "o" jumps to the operator.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const typing = (e.target as Element | null)?.closest?.("input, textarea, [contenteditable]");
-      if (e.key === "/" && !typing && !openId) {
+      if (typing || openId || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === "/") {
         e.preventDefault();
         filterBox.current?.focus();
+      } else if (e.key === "o") {
+        const box = document.getElementById(OPERATOR_INPUT);
+        if (!box) return;
+        e.preventDefault();
+        box.focus();
       }
     };
     window.addEventListener("keydown", onKey);
@@ -813,6 +921,12 @@ export function App() {
     });
   }, [state]);
   const pendingFor = (id: string) => list.pending.filter((p) => p.sessionId === id);
+  const [sort, pickSort, flipSort] = useSort();
+  const ctx: SortCtx = { now, pendingFor };
+  const sorted = (rows: Session[]) => sortRows(rows, sort, ctx);
+  // The sort control sits on the first open group's header line, right above the column.
+  const sortControl = <SortControl sort={sort} onPick={pickSort} onFlip={flipSort} />;
+  const firstHeader = list.approvals.length > 0 ? "approve" : list.groups.find((g) => g.rows.length > 0)?.key;
   const nothingActive =
     shown && list.approvals.length === 0 && list.paused.length === 0 && list.groups.every((g) => g.rows.length === 0);
   // The tab icon goes amber, and the title counts, while anything waits on you.
@@ -872,12 +986,20 @@ export function App() {
       </div>
 
       <div ref={listRef}>
+        {!firstHeader && (
+          <div className="mt-6 flex">
+            <div className={GUTTER}>{sortControl}</div>
+          </div>
+        )}
         {list.approvals.length > 0 && (
           <section className="mt-6">
-            <GroupHeader name="approve" title="Approve?" count={list.approvals.length} color="bg-needs" />
+            <GroupHeader name="approve" title="Approve?" count={list.approvals.length} color="bg-needs" lead={sortControl} />
             <div className="space-y-2">
               {list.approvals.map((p) => (
-                <div key={p.id} style={vt(`p-${p.id}`)} className="relative">
+                <div key={p.id} style={vt(`p-${p.id}`)} className="relative flex gap-2">
+                  <div className={`${GUTTER} pt-2`}>
+                    <EffortBars effort={p.effort} />
+                  </div>
                   <PendingCard
                     p={p}
                     now={now}
@@ -894,16 +1016,23 @@ export function App() {
           .filter((g) => g.rows.length > 0)
           .map((g) => (
             <section key={g.key} className="mt-6">
-              <GroupHeader name={g.key} title={g.title} count={g.rows.length} color={g.color}>
+              <GroupHeader
+                name={g.key}
+                title={g.title}
+                count={g.rows.length}
+                color={g.color}
+                lead={firstHeader === g.key && sortControl}
+              >
                 {g.key === "needs" && g.rows.length > 1 && (
                   <PauseMenu ids={g.rows.map((s) => s.id)} label={query ? `pause these ${g.rows.length}` : "pause all"} />
                 )}
               </GroupHeader>
               {g.key === "needs" ? (
                 <div className="space-y-2">
-                  {g.rows.map((s) => (
+                  {sorted(g.rows).map((s) => (
                     <NeedsYouCard
                       key={s.id}
+                      cell={<NeedsCell s={s} sort={sort} ctx={ctx} />}
                       s={s}
                       now={now}
                       pending={pendingFor(s.id)}
@@ -918,7 +1047,7 @@ export function App() {
                   ))}
                 </div>
               ) : (
-                <SessionTable name={g.key} sessions={g.rows} now={now} leaving={leaving} onOpen={setOpenId} />
+                <SessionTable name={g.key} sessions={sorted(g.rows)} now={now} leaving={leaving} onOpen={setOpenId} sort={sort} ctx={ctx} />
               )}
             </section>
           ))}
@@ -933,31 +1062,31 @@ export function App() {
 
         {list.paused.length > 0 && (
           <details className="mt-6">
-            <summary style={vt("g-paused")} className="mb-1 cursor-pointer text-xs font-bold uppercase tracking-widest text-code-dim">
+            <summary style={vt("g-paused")} className={`${PAST_GUTTER} mb-1 cursor-pointer text-xs font-bold uppercase tracking-widest text-code-dim`}>
               <span className="mr-2 inline-block h-2.5 w-2.5 border border-code-dim align-middle" />
               Paused [{list.paused.length}]
             </summary>
-            <SessionTable name="paused" sessions={list.paused} now={now} leaving={leaving} onOpen={setOpenId} />
+            <SessionTable name="paused" sessions={sorted(list.paused)} now={now} leaving={leaving} onOpen={setOpenId} sort={sort} ctx={ctx} />
           </details>
         )}
 
         {list.idle.length > 0 && (
           <details className="mt-6">
-            <summary style={vt("g-idle")} className="mb-1 cursor-pointer text-xs font-bold uppercase tracking-widest text-code-dim">
+            <summary style={vt("g-idle")} className={`${PAST_GUTTER} mb-1 cursor-pointer text-xs font-bold uppercase tracking-widest text-code-dim`}>
               <span className="mr-2 inline-block h-2.5 w-2.5 bg-code-dark align-middle" />
               Idle [{list.idle.length}]
             </summary>
-            <SessionTable name="idle" sessions={list.idle} now={now} leaving={leaving} onOpen={setOpenId} />
+            <SessionTable name="idle" sessions={sorted(list.idle)} now={now} leaving={leaving} onOpen={setOpenId} sort={sort} ctx={ctx} />
           </details>
         )}
 
         {list.closed.length > 0 && (
           <details className="mt-4">
-            <summary style={vt("g-closed")} className="mb-1 cursor-pointer text-xs font-bold uppercase tracking-widest text-code-dim">
+            <summary style={vt("g-closed")} className={`${PAST_GUTTER} mb-1 cursor-pointer text-xs font-bold uppercase tracking-widest text-code-dim`}>
               <span className="mr-2 inline-block h-2.5 w-2.5 border border-code-dim align-middle" />
               Closed, last 24h [{list.closed.length}]
             </summary>
-            <SessionTable name="closed" sessions={list.closed} now={now} leaving={leaving} onOpen={setOpenId} />
+            <SessionTable name="closed" sessions={sorted(list.closed)} now={now} leaving={leaving} onOpen={setOpenId} sort={sort} ctx={ctx} />
           </details>
         )}
       </div>
