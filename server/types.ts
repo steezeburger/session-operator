@@ -40,7 +40,15 @@ export interface Session {
   role: "operator" | null;
   /** How the transcript's last turn ended, whatever the status says now. Null for hook-only sessions. */
   turnEnd: "finished" | "mid-turn" | "failing" | null;
+  /** Set while you've put it off: no nudges, no notifications, listed under Paused. */
+  paused: Pause | null;
   lastActivity: string;
+}
+
+export interface Pause {
+  /** When it comes back on its own. Null: when you unpause it. */
+  until: string | null;
+  since: string;
 }
 
 export interface RefLinks {

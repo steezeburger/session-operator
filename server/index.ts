@@ -12,6 +12,7 @@ import { streamSSE } from "hono/streaming";
 import { nextActionFor } from "./next-action.ts";
 import { mergedInto, refLinks, refsFor } from "./refs.ts";
 import { cleanupPlan, runCleanup, sessionTree } from "./cleanup.ts";
+import { parseUntil, pause, pauseOf, unpause } from "./pauses.ts";
 import { closeSession, liveSessions, sendReply } from "./reply.ts";
 import { fullReplies, mentionCounts, readFeed, scanSessions, toolResolvedSince } from "./sessions.ts";
 import type { Behavior, OperatorState, PendingDecision, PermissionUpdate, Session, SessionStatus } from "./types.ts";
@@ -197,6 +198,7 @@ async function buildState(): Promise<OperatorState> {
         statusDetail: hs.detail,
         turnEnd: null,
         role: null,
+        paused: null,
         lastActivity: new Date(hs.at).toISOString(),
       });
     } else if (hs.at >= new Date(s.lastActivity).getTime()) {
@@ -294,6 +296,16 @@ async function buildState(): Promise<OperatorState> {
     }
   }
 
+  // A pause holds until its time, or until the session fails or ends. Replying to it ends one too
+  // (UserPromptSubmit, below). A new approval or question doesn't: it waits in the Paused group.
+  for (const s of byId.values()) {
+    s.paused = pauseOf(s.id);
+    if (s.paused && (s.status === "failing" || s.status === "closed")) {
+      unpause(s.id);
+      s.paused = null;
+    }
+  }
+
   const sessions = [...byId.values()].sort(
     (a, b) =>
       STATUS_ORDER[a.status] - STATUS_ORDER[b.status] ||
@@ -328,7 +340,7 @@ async function nudgeTick() {
   const current = new Set<string>();
   const ready: { key: string; line: string }[] = [];
   for (const s of sessions) {
-    if (s.role === "operator" || !s.live || !NUDGE_STATUSES.includes(s.status)) continue;
+    if (s.role === "operator" || !s.live || s.paused || !NUDGE_STATUSES.includes(s.status)) continue;
     const what = s.status === "done" ? (s.nextAction ?? "finished its turn") : s.statusDetail;
     const key = `${s.id}|${s.status}|${what}`;
     current.add(key);
@@ -399,7 +411,7 @@ app.post("/api/hook", async (c) => {
       };
       pending.set(entry.id, entry);
       lastAsk.set(sessionId, toolName);
-      if (Date.now() - now < 5000) notify(`${project} needs approval`, `${toolName}: ${entry.summary}`);
+      if (Date.now() - now < 5000 && !pauseOf(sessionId)) notify(`${project} needs approval`, `${toolName}: ${entry.summary}`);
       changed();
       return c.json({ id: entry.id, boot: BOOT });
     }
@@ -412,7 +424,7 @@ app.post("/api/hook", async (c) => {
       } else {
         setHookStatus(sessionId, "waiting", message, cwd);
         const alreadyPinged = [...pending.values()].some((p) => p.sessionId === sessionId);
-        if (!alreadyPinged) notify(`${project} is waiting`, message);
+        if (!alreadyPinged && !pauseOf(sessionId)) notify(`${project} is waiting`, message);
       }
       break;
     }
@@ -422,6 +434,7 @@ app.post("/api/hook", async (c) => {
       setHookStatus(sessionId, "done", "Finished its turn, your move", cwd);
       break;
     case "SessionEnd":
+      unpause(sessionId);
       dropPendingFor(sessionId);
       lastAsk.delete(sessionId);
       setHookStatus(sessionId, "closed", "Session ended", cwd);
@@ -434,6 +447,8 @@ app.post("/api/hook", async (c) => {
         dropPendingFor(sessionId);
         lastAsk.delete(sessionId);
       }
+      // You typed into it (in its terminal, the deck or sop say), so you're on it now.
+      if (event === "UserPromptSubmit") unpause(sessionId);
       setHookStatus(sessionId, "working", "Working", cwd);
       break;
   }
@@ -498,7 +513,34 @@ app.post("/api/sessions/:id/reply", async (c) => {
   } catch {
     return c.json({ error: "Couldn't type into it - tmux failed, or iTerm needs Automation allowed in System Settings" }, 500);
   }
+  // Replying means you're on it. UserPromptSubmit does this too, but only for the server the hook posts to.
+  if (unpause(c.req.param("id"))) changed();
   return c.json({ ok: true });
+});
+
+// Puts a session off until a time ("tomorrow 9am", "2h", an ISO date; see parseUntil), or until
+// you unpause it when there's no until.
+app.post("/api/sessions/:id/pause", async (c) => {
+  const id = c.req.param("id");
+  const { until } = (await c.req.json().catch(() => ({}))) as { until?: unknown };
+  if (until != null && typeof until !== "string") return c.json({ error: "until must be text" }, 400);
+  if (operatorIds.has(id)) return c.json({ error: "The operator can't be paused" }, 409);
+  let at: Date | null;
+  try {
+    at = parseUntil(until ?? "");
+  } catch (e) {
+    return c.json({ error: (e as Error).message }, 400);
+  }
+  if (at && at.getTime() <= Date.now()) return c.json({ error: "That time already passed" }, 400);
+  const p = pause(id, at);
+  changed();
+  return c.json(p);
+});
+
+app.post("/api/sessions/:id/unpause", (c) => {
+  const was = unpause(c.req.param("id"));
+  changed();
+  return c.json({ ok: true, was });
 });
 
 // Images dropped into a reply. Saved to a temp file; the reply then types the path, which

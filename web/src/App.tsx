@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import type { Behavior, OperatorState, PendingDecision, PermissionUpdate, Session, SessionStatus } from "../../server/types.ts";
 import { setFavicon } from "./favicon.ts";
 import { MatrixRain } from "./MatrixRain.tsx";
 import { closedOutcome, focusRefs, RefLink, RefList, sessionMatches, sessionName } from "./Refs.tsx";
+import { PauseMenu, untilLabel } from "./Pause.tsx";
 import { WithPaths } from "./Paths.tsx";
 import { ReplyBox } from "./ReplyBox.tsx";
 import { SessionDetail } from "./SessionDetail.tsx";
@@ -74,11 +75,12 @@ function useOperatorState() {
   return { state, offline, refresh };
 }
 
-function GroupHeader({ title, count, color }: { title: string; count: number; color: string }) {
+function GroupHeader({ title, count, color, children }: { title: string; count: number; color: string; children?: ReactNode }) {
   return (
     <h2 className="mb-1 flex items-center gap-2 text-xs font-bold uppercase tracking-widest">
       <span className={`inline-block h-2.5 w-2.5 ${color}`} />
       {">"} {title} [{count}]
+      {children && <span className="ml-auto font-normal normal-case tracking-normal">{children}</span>}
     </h2>
   );
 }
@@ -267,6 +269,7 @@ function SessionRow({ s, now, onOpen }: { s: Session; now: number; onOpen: () =>
   const outcome = s.status === "closed" ? closedOutcome(s) : null;
   const next =
     outcome?.text ??
+    (s.paused ? `paused ${untilLabel(s, now)}` : null) ??
     (s.status === "blocked" ? (s.blockedOn ?? "-") : s.status === "waiting" || s.status === "failing" ? s.statusDetail : style.next);
   return (
     // A div, not a button: it holds ref links, and links can't nest in a button.
@@ -277,7 +280,8 @@ function SessionRow({ s, now, onOpen }: { s: Session; now: number; onOpen: () =>
       onKeyDown={(e) => e.key === "Enter" && onOpen()}
       className="grid w-full cursor-pointer grid-cols-[5.5rem_1fr_2.5rem] items-stretch text-left text-xs leading-tight hover:bg-code-dark/50 md:grid-cols-[5.5rem_15rem_1fr_14rem_2.5rem]"
     >
-      <div className={`px-1.5 py-0.5 font-bold ${style.block}`}>{style.label}</div>
+      {/* Paused: its real status, minus the pulse, since you've put it off. */}
+      <div className={`px-1.5 py-0.5 font-bold ${s.paused ? style.block.replace("pulse", "opacity-60") : style.block}`}>{style.label}</div>
       <div className="min-w-0 truncate px-1.5 py-0.5" title={`${s.cwd}${s.branch ? ` (${s.branch})` : ""}`}>
         <span className="font-bold">{repoName(s)}</span>
         {refs.length > 0 ? (
@@ -442,7 +446,10 @@ function NeedsYouCard({
             {sessionName(s) && <span className="text-code-dim"> · {sessionName(s)}</span>}
             {s.topic && <span className="text-code-dim"> · now: {s.topic}</span>}
           </span>
-          <span className="shrink-0 text-code-dim">{ago(s.lastActivity, now)} ago</span>
+          <span className="flex shrink-0 items-baseline gap-2 text-code-dim">
+            {ago(s.lastActivity, now)} ago
+            <PauseMenu ids={[s.id]} />
+          </span>
         </div>
         <RefList refs={focus.own} className="mt-1" />
         {pending.length > 0 ? (
@@ -530,17 +537,21 @@ export function App() {
   const everyone = all.filter((s) => !operators.includes(s));
   // The filter narrows what's listed; the tab icon and counts still see everyone.
   const sessions = everyone.filter((s) => sessionMatches(s, query));
-  const idle = sessions.filter((s) => s.status === "idle");
-  const closed = sessions.filter((s) => s.status === "closed");
+  // Paused ones sit in their own group, whatever their status, and count for nothing up top.
+  const paused = sessions.filter((s) => s.paused);
+  const active = sessions.filter((s) => !s.paused);
+  const idle = active.filter((s) => s.status === "idle");
+  const closed = active.filter((s) => s.status === "closed");
   const pending = state?.pending ?? [];
   const operatorIds = new Set(operators.map((s) => s.id));
   // Approvals show inside their session's card. Only one whose session isn't listed gets its own.
   const approvals = pending.filter((p) => !operatorIds.has(p.sessionId) && !everyone.some((s) => s.id === p.sessionId));
   const openSession = all.find((s) => s.id === openId);
   const pendingFor = (id: string) => pending.filter((p) => p.sessionId === id);
-  const groups = GROUPS.map((g) => ({ ...g, rows: sessions.filter((s) => g.statuses.includes(s.status)) }));
-  const allGroups = GROUPS.map((g) => ({ ...g, rows: everyone.filter((s) => g.statuses.includes(s.status)) }));
-  const nothingActive = state && approvals.length === 0 && groups.every((g) => g.rows.length === 0);
+  const groups = GROUPS.map((g) => ({ ...g, rows: active.filter((s) => g.statuses.includes(s.status)) }));
+  const allGroups = GROUPS.map((g) => ({ ...g, rows: everyone.filter((s) => !s.paused && g.statuses.includes(s.status)) }));
+  const pausedCount = everyone.filter((s) => s.paused).length;
+  const nothingActive = state && approvals.length === 0 && paused.length === 0 && groups.every((g) => g.rows.length === 0);
   // The tab icon goes amber, and the title counts, while anything waits on you.
   const needsCount =
     (allGroups.find((g) => g.key === "needs")?.rows.length ?? 0) +
@@ -581,7 +592,10 @@ export function App() {
             s={s}
             now={now}
             pending={pending.filter((p) => p.sessionId === s.id)}
-            tally={allGroups.filter((g) => g.rows.length > 0).map((g) => ({ title: g.title, count: g.rows.length, color: g.color }))}
+            tally={[
+              ...allGroups.filter((g) => g.rows.length > 0).map((g) => ({ title: g.title, count: g.rows.length, color: g.color })),
+              ...(pausedCount > 0 ? [{ title: "Paused", count: pausedCount, color: "border border-code-dim" }] : []),
+            ]}
             onOpen={() => setOpenId(s.id)}
             onDecide={(id, b, a) => void decide(id, b, a)}
           />
@@ -608,7 +622,11 @@ export function App() {
         .filter((g) => g.rows.length > 0)
         .map((g) => (
           <section key={g.key} className="mt-6">
-            <GroupHeader title={g.title} count={g.rows.length} color={g.color} />
+            <GroupHeader title={g.title} count={g.rows.length} color={g.color}>
+              {g.key === "needs" && g.rows.length > 1 && (
+                <PauseMenu ids={g.rows.map((s) => s.id)} label={query ? `pause these ${g.rows.length}` : "pause all"} />
+              )}
+            </GroupHeader>
             {g.key === "needs" ? (
               <div className="space-y-2">
                 {g.rows.map((s) => (
@@ -634,6 +652,16 @@ export function App() {
         nothingActive && !query && (
           <p className={`${BORDER} mt-6 border-dashed bg-black/85 p-3 text-center text-sm`}>wake up... nothing is running</p>
         )
+      )}
+
+      {paused.length > 0 && (
+        <details className="mt-6">
+          <summary className="mb-1 cursor-pointer text-xs font-bold uppercase tracking-widest text-code-dim">
+            <span className="mr-2 inline-block h-2.5 w-2.5 border border-code-dim align-middle" />
+            Paused [{paused.length}]
+          </summary>
+          <SessionTable sessions={paused} now={now} onOpen={setOpenId} />
+        </details>
       )}
 
       {idle.length > 0 && (
