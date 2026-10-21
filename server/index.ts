@@ -311,7 +311,8 @@ const nudged = new Set<string>();
 let lastNudgeAt = 0;
 
 function sessionLabel(s: Session): string {
-  const card = s.refs.find((r) => r.source === "own" && r.kind === "card");
+  // The card or issue the branch is for (a Shortcut card, or a GitHub issue).
+  const card = s.refs.find((r) => r.source === "own" && r.kind === "card") ?? s.refs.find((r) => r.source === "own" && r.kind === "issue");
   return card ? card.label : s.branch && s.branch !== "main" ? `${s.project} (${s.branch})` : s.project;
 }
 

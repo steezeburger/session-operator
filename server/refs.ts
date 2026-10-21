@@ -85,13 +85,44 @@ interface GhIssue {
   title: string;
   html_url: string;
   state: string;
+  state_reason?: string | null;
   draft?: boolean;
   pull_request?: { merged_at: string | null };
 }
 
-function githubRef(i: GhIssue): Ref {
+// A branch names its issue by leading with the number: "123-fix-login" (what `gh issue develop`
+// makes), also "issue-123-...", "gh-123/..." or "feat/123-...".
+const ISSUE_BRANCH_RE = /^(?:[\w.-]+\/)?(?:issue-|gh-)?(\d{1,6})(?:[-_/]|$)/i;
+
+/**
+ * The issue's Status column on a GitHub Project ("Todo", "In Progress", "Done"), if it's on
+ * one. Needs the read:project scope (`gh auth refresh -s read:project`); without it, null.
+ */
+async function projectStatus(repo: string, n: number): Promise<string | null> {
+  const [owner, name] = repo.split("/");
+  try {
+    const { stdout } = await run(
+      "gh",
+      [
+        "api", "graphql",
+        "-f", "query=query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){issue(number:$n){projectItems(first:5){nodes{fieldValueByName(name:\"Status\"){... on ProjectV2ItemFieldSingleSelectValue{name}}}}}}}",
+        "-f", `o=${owner}`, "-f", `r=${name}`, "-F", `n=${n}`,
+      ],
+      { timeout: 15_000 },
+    );
+    const nodes = (JSON.parse(stdout) as { data?: { repository?: { issue?: { projectItems?: { nodes?: { fieldValueByName?: { name?: string } | null }[] } } } } })
+      .data?.repository?.issue?.projectItems?.nodes ?? [];
+    return nodes.map((x) => x.fieldValueByName?.name).find((x): x is string => !!x) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function githubRef(i: GhIssue, status: string | null = null): Ref {
   const pr = !!i.pull_request;
-  const state = pr && i.pull_request?.merged_at ? "merged" : pr && i.draft && i.state === "open" ? "draft" : i.state;
+  // An issue on a Project shows its Status column; otherwise closed-as-completed reads as done.
+  const issueState = status?.toLowerCase() ?? (i.state === "closed" && i.state_reason === "completed" ? "done" : i.state);
+  const state = pr ? (i.pull_request?.merged_at ? "merged" : i.draft && i.state === "open" ? "draft" : i.state) : issueState;
   return {
     tracker: "github",
     kind: pr ? "pr" : "issue",
@@ -108,13 +139,17 @@ function githubRef(i: GhIssue): Ref {
 const github: Tracker = {
   name: "github",
   mention: GH_RE,
-  fromBranch: () => [],
+  fromBranch: (branch) => {
+    const m = branch.match(ISSUE_BRANCH_RE);
+    return m ? [Number(m[1])] : [];
+  },
   ttl: 2 * 60 * 1000,
   key: (id, repo) => (repo ? `${repo}#${id}` : null),
   async load(id, repo) {
     if (!repo) return null;
     const { stdout } = await run("gh", ["api", `repos/${repo}/issues/${id}`], { timeout: 15_000 });
-    return githubRef(JSON.parse(stdout) as GhIssue);
+    const issue = JSON.parse(stdout) as GhIssue;
+    return githubRef(issue, issue.pull_request ? null : await projectStatus(repo, id));
   },
 };
 
@@ -173,6 +208,7 @@ interface Cached<T> {
 
 const cache = new Map<string, Cached<Ref>>();
 const merges = new Map<string, Cached<string>>();
+const closers = new Map<string, Cached<number[]>>();
 const repos = new Map<string, string | null>();
 const repoDirs = new Map<string, Promise<string | null>>();
 const inflight = new Set<string>();
@@ -272,6 +308,18 @@ export async function mergedInto(cwd: string, branch: string | null, onReady: ()
   return merges.get(key)?.value ?? null;
 }
 
+// The issues the branch's PR says it closes ("Closes #123"), for branches that don't name one.
+async function loadClosedIssues(repo: string, branch: string): Promise<number[] | null> {
+  const { stdout } = await run(
+    "gh",
+    ["pr", "list", "-R", repo, "--head", branch, "--state", "all", "--limit", "1", "--json", "closingIssuesReferences"],
+    { timeout: 15_000 },
+  );
+  const [p] = JSON.parse(stdout) as { closingIssuesReferences?: { number: number }[] }[];
+  const ns = (p?.closingIssuesReferences ?? []).map((x) => x.number);
+  return ns.length > 0 ? ns : null;
+}
+
 async function loadBranchPr(repo: string, branch: string): Promise<Ref | null> {
   const { stdout } = await run("gh", ["pr", "list", "-R", repo, "--head", branch, "--state", "all", "--limit", "1", "--json", "number"], {
     timeout: 15_000,
@@ -305,6 +353,13 @@ export async function refsFor(
     const key = `branch:${repo}#${branch}`;
     fill(cache, key, github.ttl, () => loadBranchPr(repo, branch), onReady);
     add(cache.get(key)?.value, "own");
+    const closesKey = `closes:${repo}#${branch}`;
+    fill(closers, closesKey, github.ttl, () => loadClosedIssues(repo, branch), onReady);
+    for (const id of closers.get(closesKey)?.value ?? []) {
+      const k = `github:${github.key(id, repo)}`;
+      fill(cache, k, github.ttl, () => github.load(id, repo), onReady);
+      add(cache.get(k)?.value, "own");
+    }
   }
   for (const t of TRACKERS) {
     const own = new Set(t.fromBranch(branch ?? ""));

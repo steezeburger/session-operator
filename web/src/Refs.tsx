@@ -10,6 +10,11 @@ const STATE_STYLE: Record<string, string> = {
   paused: "text-code-dim",
   released: "text-[#b48cff] [text-shadow:0_0_4px_rgb(180_140_255/0.6)]",
   done: "text-[#b48cff] [text-shadow:0_0_4px_rgb(180_140_255/0.6)]",
+  // GitHub Projects' default Status columns.
+  todo: "text-code-dim",
+  backlog: "text-code-dim",
+  "in progress": "text-code",
+  "in review": "text-needs [text-shadow:0_0_4px_rgb(255_176_0/0.6)]",
 };
 
 /**
@@ -29,7 +34,8 @@ const SHIPPED = "text-[#b48cff] [text-shadow:0_0_4px_rgb(180_140_255/0.6)]";
 export function closedOutcome(s: Session): { text: string; cls: string } {
   const { own } = focusRefs(s);
   const pr = own.find((r) => r.kind === "pr");
-  const card = own.find((r) => r.kind === "card");
+  // The work item: a Shortcut card, else a GitHub issue (its Project Status, or open/closed).
+  const card = own.find((r) => r.kind === "card") ?? own.find((r) => r.kind === "issue");
   if (pr?.state === "merged") return { text: `shipped · ${refLabel(pr)} merged`, cls: SHIPPED };
   if (pr?.state === "open" || pr?.state === "draft") {
     return { text: `left in review · ${refLabel(pr)} ${pr.state}`, cls: "text-blocked" };

@@ -3,8 +3,8 @@
 // reading, messaging, starting and ending Claude Code sessions through the server.
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -12,6 +12,7 @@ const BASE = process.env.OPERATOR_URL ?? "http://127.0.0.1:4477";
 
 const USAGE = `sop - session operator
 
+  sop setup [--dry-run]           install the hooks in ~/.claude/settings.json and sop in ~/.local/bin
   sop operator [claude args...]   resume the operator session in this terminal (--new for a fresh one)
 
   sop ls                          every session: who, status, what it needs
@@ -24,7 +25,7 @@ const USAGE = `sop - session operator
       --badge <label>              iTerm badge for the new tab, or tmux window name
       --term iterm|tmux            where to start it (default $OPERATOR_TERMINAL, else iterm)
 
-<who> is a session id prefix, a card like sc-8121, a project name, or part of a branch.`;
+<who> is a session id prefix, a card or issue like sc-8121 or #123, a project name, or part of a branch.`;
 
 function die(msg) {
   console.error(msg);
@@ -47,7 +48,7 @@ const post = (path, body) =>
   api(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
 function label(s) {
-  const card = s.refs.find((r) => r.source === "own" && r.kind === "card");
+  const card = s.refs.find((r) => r.source === "own" && r.kind === "card") ?? s.refs.find((r) => r.source === "own" && r.kind === "issue");
   if (card) return card.label;
   return s.branch && s.branch !== "main" ? `${s.project} (${s.branch})` : s.project;
 }
@@ -208,6 +209,76 @@ async function operator(args) {
   process.exit(r.status ?? 1);
 }
 
+// The hooks the deck needs. PermissionRequest waits for your answer for up to an hour, so its
+// timeout sits just above the hook's own (OPERATOR_TIMEOUT_MS plus one poll).
+const HOOK_EVENTS = { PermissionRequest: 3660, Notification: 5, Stop: 5, UserPromptSubmit: 5, SessionEnd: 5 };
+
+// Merges the hooks into ~/.claude/settings.json next to whatever's already there, pointing at
+// this checkout. An old operator-hook path is updated in place, never duplicated. Then links
+// sop into ~/.local/bin. Safe to run again.
+function setup(args) {
+  const dry = args.includes("--dry-run");
+  const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const hook = join(repo, "bin", "operator-hook");
+  const settingsPath = join(homedir(), ".claude", "settings.json");
+  const changes = [];
+
+  let settings = {};
+  if (existsSync(settingsPath)) {
+    try {
+      settings = JSON.parse(readFileSync(settingsPath, "utf8"));
+    } catch {
+      die(`${settingsPath} isn't valid JSON - fix it first, setup won't overwrite it`);
+    }
+  }
+  settings.hooks ??= {};
+  for (const [event, timeout] of Object.entries(HOOK_EVENTS)) {
+    const groups = (settings.hooks[event] ??= []);
+    const ours = groups.flatMap((g) => g.hooks ?? []).find((h) => typeof h.command === "string" && h.command.includes("operator-hook"));
+    if (!ours) {
+      groups.push({ hooks: [{ type: "command", command: hook, timeout }] });
+      changes.push(`add ${event} hook`);
+    } else if (ours.command.replace(/^\$HOME|^~/, homedir()) !== hook || ours.timeout !== timeout) {
+      changes.push(`update ${event} hook (${ours.command}, ${ours.timeout ?? "no"} timeout -> ${hook}, ${timeout})`);
+      ours.command = hook;
+      ours.timeout = timeout;
+    }
+  }
+  if (changes.length > 0 && !dry) {
+    mkdirSync(dirname(settingsPath), { recursive: true });
+    if (existsSync(settingsPath)) copyFileSync(settingsPath, `${settingsPath}.bak-${Date.now()}`);
+    writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
+  }
+
+  const bin = join(homedir(), ".local", "bin");
+  const link = join(bin, "sop");
+  const target = join(repo, "bin", "sop");
+  let current = null;
+  try {
+    current = lstatSync(link).isSymbolicLink() ? readlinkSync(link) : "a file";
+  } catch {}
+  if (current === "a file") {
+    console.log(`left ${link} alone: it's a real file, not a link`);
+  } else if (current !== target) {
+    changes.push(`link ${link} -> ${target}`);
+    if (!dry) {
+      mkdirSync(bin, { recursive: true });
+      if (current) unlinkSync(link);
+      symlinkSync(target, link);
+    }
+  }
+
+  console.log(changes.length === 0 ? "already set up" : `${dry ? "would " : ""}${changes.join("\n" + (dry ? "would " : ""))}`);
+  if (changes.length > 0 && !dry && existsSync(settingsPath)) console.log(`(old settings backed up next to ${settingsPath})`);
+  console.log(`
+then:
+  cd ${repo} && pnpm install && pnpm build && pnpm start     the deck, at ${BASE}
+  gh auth refresh -s read:project                              GitHub Project status on issues
+  export OPERATOR_TERMINAL=tmux                                 if sop start should use tmux
+  export SHORTCUT_API_TOKEN=...                                 only if you use Shortcut
+Sessions already open pick up the hooks once they're restarted.`);
+}
+
 const [cmd, ...args] = process.argv.slice(2);
 const commands = {
   operator: () => operator(args),
@@ -216,6 +287,7 @@ const commands = {
   say: () => (args[0] ? say(args[0], args.slice(1)) : die("sop say <who> <text>")),
   end: () => (args[0] ? end(args[0]) : die("sop end <who>")),
   start: () => start(args),
+  setup: () => setup(args),
 };
 if (!commands[cmd]) {
   console.log(USAGE);
