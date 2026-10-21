@@ -3,12 +3,77 @@ import type { CleanupItem, CleanupResult, FeedItem, Session } from "../../server
 import { closedOutcome, focusRefs, RefList, WithMentions } from "./Refs.tsx";
 import { imageFiles, ReplyBox } from "./ReplyBox.tsx";
 
-const KIND_STYLE: Record<FeedItem["kind"], { label: string; cls: string }> = {
-  user: { label: "you", cls: "border-code text-white [text-shadow:0_0_4px_rgb(214_255_223/0.5)]" },
-  assistant: { label: "claude", cls: "border-code-dim" },
-  tool: { label: "tool", cls: "border-code-dark text-code-dim text-xs" },
-  error: { label: "error", cls: "border-fail text-fail [text-shadow:0_0_4px_rgb(255_42_42/0.6)]" },
+// Three voices, all Matrix: you in white on a faint panel, Claude in full glowing green on
+// black, and its tool calls folded into dark-green log blocks with the tool names inverted.
+const KIND_STYLE: Record<FeedItem["kind"], { label: string; cls: string; labelCls: string }> = {
+  user: { label: "you", cls: "border-white bg-white/5 py-1 text-white [text-shadow:none]", labelCls: "text-white/50" },
+  assistant: { label: "claude", cls: "border-code text-code [text-shadow:0_0_6px_rgb(0_255_65/0.6)]", labelCls: "text-code-dim" },
+  tool: { label: "tool", cls: "border-tool text-xs text-code-dim [text-shadow:none]", labelCls: "text-tool-dim" },
+  error: { label: "error", cls: "border-fail text-fail [text-shadow:0_0_4px_rgb(255_42_42/0.6)]", labelCls: "text-fail/70" },
 };
+
+// "Bash: run the tests" -> the tool's name as an inverted chip, then the rest as log text.
+function ToolLine({ text }: { text: string }) {
+  const at = text.indexOf(": ");
+  const name = at < 0 ? text : text.slice(0, at);
+  return (
+    <>
+      <span className="mr-2 bg-tool px-1 text-[10px] font-bold uppercase tracking-wider text-black">{name}</span>
+      {at >= 0 && text.slice(at + 2)}
+    </>
+  );
+}
+
+// A run of more than a few tool calls shows as one line of name counts until clicked open.
+const TOOLS_SHOWN = 3;
+function ToolBlock({ items }: { items: FeedItem[] }) {
+  const [open, setOpen] = useState(items.length <= TOOLS_SHOWN);
+  const counts = new Map<string, number>();
+  for (const t of items) {
+    const name = t.text.split(": ")[0] ?? t.text;
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  return (
+    <div className={`space-y-0.5 border-l-2 bg-code-dark/40 px-2 py-1 ${KIND_STYLE.tool.cls}`}>
+      {open ? (
+        <>
+          {items.map((t, j) => (
+            <div key={j} className="truncate" title={`${t.text}\n${time(t.at)}`}>
+              <ToolLine text={t.text} />
+            </div>
+          ))}
+          {items.length > TOOLS_SHOWN && (
+            <button type="button" onClick={() => setOpen(false)} className="text-[10px] uppercase tracking-wider hover:text-code">
+              fold
+            </button>
+          )}
+        </>
+      ) : (
+        <button type="button" onClick={() => setOpen(true)} className="flex w-full flex-wrap items-center gap-x-2 gap-y-1 text-left hover:text-code">
+          <span>{items.length} tool calls</span>
+          {[...counts].map(([name, c]) => (
+            <span key={name} className="bg-tool px-1 text-[10px] font-bold uppercase tracking-wider text-black">
+              {name}
+              {c > 1 ? ` ×${c}` : ""}
+            </span>
+          ))}
+        </button>
+      )}
+    </div>
+  );
+}
+
+// Consecutive tool calls fold into one block, like the terminal's "Ran 5 shell commands".
+type FeedRow = { kind: "item"; item: FeedItem; i: number } | { kind: "tools"; items: FeedItem[]; i: number };
+function feedRows(feed: FeedItem[]): FeedRow[] {
+  const rows: FeedRow[] = [];
+  feed.forEach((item, i) => {
+    const last = rows.at(-1);
+    if (item.kind === "tool" && last?.kind === "tools") last.items.push(item);
+    else rows.push(item.kind === "tool" ? { kind: "tools", items: [item], i } : { kind: "item", item, i });
+  });
+  return rows;
+}
 
 const WIDTH_KEY = "deck.panelWidth";
 const MIN_WIDTH = 360;
@@ -257,17 +322,24 @@ export function SessionDetail({ session, onClose, decisions = [] }: { session: S
               </button>
             )}
             {!feed && !missing && <p className="cursor text-code-dim">loading</p>}
-            {feed?.map((item, i) => {
+            {feed && feedRows(feed).map((row, n) => {
+              if (row.kind === "tools") return <ToolBlock key={`tools-${row.items[0]?.at}-${row.items[0]?.text}`} items={row.items} />;
+              const { item, i } = row;
               const k = KIND_STYLE[item.kind];
+              // Each of your messages starts a turn: a rule and room above it, so the chat
+              // reads in chunks and your own words are the landmarks when scrolling back.
+              const turn = item.kind === "user" && n > 0;
               return (
-                <div key={`${item.at}-${i}`} className={`border-l-2 pl-2 ${k.cls}`}>
-                  <div className="text-[10px] uppercase tracking-widest text-code-dim">
-                    {k.label} {time(item.at)}
+                  <div key={`${item.at}-${i}`} className={turn ? "!mt-6 border-t border-code-dark pt-4" : ""}>
+                  <div className={`border-l-2 pl-2 ${k.cls}`}>
+                    <div className={`text-[10px] uppercase tracking-widest ${k.labelCls}`}>
+                      {k.label} {time(item.at)}
+                    </div>
+                    <div className="whitespace-pre-wrap break-words">
+                      <Linkified text={item.text} session={session} />
+                    </div>
                   </div>
-                  <div className="whitespace-pre-wrap break-words">
-                    <Linkified text={item.text} session={session} />
                   </div>
-                </div>
               );
             })}
             <div ref={bottom} />

@@ -8,10 +8,27 @@
   --color-needs: #ffb000;
   --color-fail: #ff2a2a;
   --color-blocked: #00e5ff;
+  /* Tool calls: a muted, unlit green, so they sit under Claude's bright words. */
+  --color-tool: #3f9a5a;
+  --color-tool-dim: #1f5a30;
 }
 
 html {
   color-scheme: dark;
+}
+
+/* Tailwind v4 dropped the pointer on buttons. Everything clickable gets it back here, once. */
+@layer base {
+  button:not(:disabled),
+  [role="button"],
+  summary,
+  input[type="checkbox"]:not(:disabled) {
+    cursor: pointer;
+  }
+  button:disabled,
+  input:disabled {
+    cursor: not-allowed;
+  }
 }
 
 body {
