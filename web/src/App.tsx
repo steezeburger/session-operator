@@ -1,9 +1,10 @@
-import { type CSSProperties, type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, type ReactNode, type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import type { Behavior, OperatorState, PendingDecision, PermissionUpdate, Session, SessionStatus } from "../../server/types.ts";
 import { setFavicon } from "./favicon.ts";
 import { MatrixRain } from "./MatrixRain.tsx";
 import { closedOutcome, focusRefs, RefLink, RefList, sessionMatches, sessionName } from "./Refs.tsx";
+import { PauseMenu, untilLabel } from "./Pause.tsx";
 import { WithPaths } from "./Paths.tsx";
 import { ReplyBox } from "./ReplyBox.tsx";
 import { SessionDetail } from "./SessionDetail.tsx";
@@ -94,6 +95,7 @@ function placements(st: OperatorState): Map<string, string> {
   const at = new Map<string, string>();
   for (const p of v.approvals) at.set(p.id, "approve");
   for (const g of v.groups) for (const s of g.rows) at.set(s.id, g.key);
+  for (const s of v.paused) at.set(s.id, "paused");
   for (const s of v.idle) at.set(s.id, "idle");
   for (const s of v.closed) at.set(s.id, "closed");
   return at;
@@ -102,6 +104,7 @@ function placements(st: OperatorState): Map<string, string> {
 const PLACE_NAMES: Record<string, string> = {
   approve: "approve",
   ...Object.fromEntries(GROUPS.map((g) => [g.key, g.title.toLowerCase()])),
+  paused: "paused",
   idle: "idle",
   closed: "closed",
 };
@@ -269,6 +272,8 @@ function sortState(state: OperatorState | null, query = "") {
   const everyone = all.filter((s) => !operators.includes(s));
   // What the filter lets through. Groups list those; `allGroups` counts everyone.
   const sessions = everyone.filter((s) => sessionMatches(s, query));
+  // Paused ones sit in their own group, whatever their status, and count for nothing up top.
+  const active = sessions.filter((s) => !s.paused);
   const pending = state?.pending ?? [];
   const operatorIds = new Set(operators.map((s) => s.id));
   const grouped = (from: Session[]) => GROUPS.map((g) => ({ ...g, rows: from.filter((s) => g.statuses.includes(s.status)) }));
@@ -278,20 +283,35 @@ function sortState(state: OperatorState | null, query = "") {
     everyone,
     sessions,
     pending,
-    idle: sessions.filter((s) => s.status === "idle"),
-    closed: sessions.filter((s) => s.status === "closed"),
+    paused: sessions.filter((s) => s.paused),
+    pausedCount: everyone.filter((s) => s.paused).length,
+    idle: active.filter((s) => s.status === "idle"),
+    closed: active.filter((s) => s.status === "closed"),
     // Approvals show inside their session's card. Only one whose session isn't listed gets its own.
     approvals: pending.filter((p) => !operatorIds.has(p.sessionId) && !everyone.some((s) => s.id === p.sessionId)),
-    groups: grouped(sessions),
-    allGroups: grouped(everyone),
+    groups: grouped(active),
+    allGroups: grouped(everyone.filter((s) => !s.paused)),
   };
 }
 
-function GroupHeader({ name, title, count, color }: { name: string; title: string; count: number; color: string }) {
+function GroupHeader({
+  name,
+  title,
+  count,
+  color,
+  children,
+}: {
+  name: string;
+  title: string;
+  count: number;
+  color: string;
+  children?: ReactNode;
+}) {
   return (
     <h2 style={vt(`g-${name}`)} className="mb-1 flex items-center gap-2 text-xs font-bold uppercase tracking-widest">
       <span className={`inline-block h-2.5 w-2.5 ${color}`} />
       {">"} {title} [{count}]
+      {children && <span className="ml-auto font-normal normal-case tracking-normal">{children}</span>}
     </h2>
   );
 }
@@ -480,6 +500,7 @@ function SessionRow({ s, now, leaving, onOpen }: { s: Session; now: number; leav
   const outcome = s.status === "closed" ? closedOutcome(s) : null;
   const next =
     outcome?.text ??
+    (s.paused ? `paused ${untilLabel(s, now)}` : null) ??
     (s.status === "blocked" ? (s.blockedOn ?? "-") : s.status === "waiting" || s.status === "failing" ? s.statusDetail : style.next);
   return (
     // A div, not a button: it holds ref links, and links can't nest in a button.
@@ -491,7 +512,8 @@ function SessionRow({ s, now, leaving, onOpen }: { s: Session; now: number; leav
       style={vt(`s-${s.id}`)}
       className="relative grid w-full cursor-pointer grid-cols-[5.5rem_1fr_2.5rem] items-stretch text-left text-xs leading-tight hover:bg-code-dark/50 md:grid-cols-[5.5rem_15rem_1fr_14rem_2.5rem]"
     >
-      <div className={`px-1.5 py-0.5 font-bold ${style.block}`}>{style.label}</div>
+      {/* Paused: its real status, minus the pulse, since you've put it off. */}
+      <div className={`px-1.5 py-0.5 font-bold ${s.paused ? style.block.replace("pulse", "opacity-60") : style.block}`}>{style.label}</div>
       <div className="min-w-0 truncate px-1.5 py-0.5" title={`${s.cwd}${s.branch ? ` (${s.branch})` : ""}`}>
         <span className="font-bold">{repoName(s)}</span>
         {refs.length > 0 ? (
@@ -662,7 +684,10 @@ function NeedsYouCard({
             {sessionName(s) && <span className="text-code-dim"> · {sessionName(s)}</span>}
             {s.topic && <span className="text-code-dim"> · now: {s.topic}</span>}
           </span>
-          <span className="shrink-0 text-code-dim">{ago(s.lastActivity, now)} ago</span>
+          <span className="flex shrink-0 items-baseline gap-2 text-code-dim">
+            {ago(s.lastActivity, now)} ago
+            <PauseMenu ids={[s.id]} />
+          </span>
         </div>
         <RefList refs={focus.own} className="mt-1" />
         {pending.length > 0 ? (
@@ -774,7 +799,7 @@ export function App() {
   // still while you're aiming at it.
   const listRef = useRef<HTMLDivElement>(null);
   // The filter narrows what's listed; the tab icon, counts and lone approvals still see everyone.
-  const { all, operators, everyone, sessions, pending, approvals, allGroups } = sortState(state, query);
+  const { all, operators, everyone, sessions, pending, approvals, allGroups, pausedCount } = sortState(state, query);
   const openSession = all.find((s) => s.id === openId);
   // No animation behind the panel: the snapshots would draw over it.
   const answered = useMemo(() => withSent(state, sent), [state, sent]);
@@ -788,7 +813,8 @@ export function App() {
     });
   }, [state]);
   const pendingFor = (id: string) => list.pending.filter((p) => p.sessionId === id);
-  const nothingActive = shown && list.approvals.length === 0 && list.groups.every((g) => g.rows.length === 0);
+  const nothingActive =
+    shown && list.approvals.length === 0 && list.paused.length === 0 && list.groups.every((g) => g.rows.length === 0);
   // The tab icon goes amber, and the title counts, while anything waits on you.
   const needsCount =
     (allGroups.find((g) => g.key === "needs")?.rows.length ?? 0) +
@@ -830,7 +856,10 @@ export function App() {
             s={s}
             now={now}
             pending={pending.filter((p) => p.sessionId === s.id)}
-            tally={allGroups.filter((g) => g.rows.length > 0).map((g) => ({ title: g.title, count: g.rows.length, color: g.color }))}
+            tally={[
+              ...allGroups.filter((g) => g.rows.length > 0).map((g) => ({ title: g.title, count: g.rows.length, color: g.color })),
+              ...(pausedCount > 0 ? [{ title: "Paused", count: pausedCount, color: "border border-code-dim" }] : []),
+            ]}
             onOpen={() => setOpenId(s.id)}
             onDecide={(id, b, a) => void decide(id, b, a)}
           />
@@ -865,7 +894,11 @@ export function App() {
           .filter((g) => g.rows.length > 0)
           .map((g) => (
             <section key={g.key} className="mt-6">
-              <GroupHeader name={g.key} title={g.title} count={g.rows.length} color={g.color} />
+              <GroupHeader name={g.key} title={g.title} count={g.rows.length} color={g.color}>
+                {g.key === "needs" && g.rows.length > 1 && (
+                  <PauseMenu ids={g.rows.map((s) => s.id)} label={query ? `pause these ${g.rows.length}` : "pause all"} />
+                )}
+              </GroupHeader>
               {g.key === "needs" ? (
                 <div className="space-y-2">
                   {g.rows.map((s) => (
@@ -896,6 +929,16 @@ export function App() {
           nothingActive && (
             <p style={vt("empty")} className={`${BORDER} mt-6 border-dashed bg-black/85 p-3 text-center text-sm`}>wake up... nothing is running</p>
           )
+        )}
+
+        {list.paused.length > 0 && (
+          <details className="mt-6">
+            <summary style={vt("g-paused")} className="mb-1 cursor-pointer text-xs font-bold uppercase tracking-widest text-code-dim">
+              <span className="mr-2 inline-block h-2.5 w-2.5 border border-code-dim align-middle" />
+              Paused [{list.paused.length}]
+            </summary>
+            <SessionTable name="paused" sessions={list.paused} now={now} leaving={leaving} onOpen={setOpenId} />
+          </details>
         )}
 
         {list.idle.length > 0 && (

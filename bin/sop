@@ -18,6 +18,11 @@ const USAGE = `sop - session operator
   sop feed <who> [n]              a session's last n messages (default 12)
   sop say <who> <text...>         type a message into a session and press Enter
   sop end <who>                   /exit a session and close its iTerm tab or tmux pane
+  sop pause <who> [until]         put it off: no nudges or notifications, listed under Paused
+                                  until: 2h, 30m, tomorrow, workday, mon, mon 9am, 6pm, an ISO
+                                  date; leave it out to pause until you unpause.
+                                  <who> "all" pauses every session that needs you right now
+  sop unpause <who>               bring it back (replying to it, or it failing, does that too)
   sop start <dir> [options] <prompt...>
       --worktree <branch>          make a git worktree for <branch> off --base first
       --base <ref>                 base for the new branch (default origin/main)
@@ -53,7 +58,15 @@ function label(s) {
   return s.branch && s.branch !== "main" ? `${s.project} (${s.branch})` : s.project;
 }
 
+function pausedFor(s) {
+  if (!s.paused) return "";
+  if (!s.paused.until) return "paused until you unpause";
+  const at = new Date(s.paused.until);
+  return `paused until ${at.toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}`;
+}
+
 function need(s) {
+  if (s.paused) return pausedFor(s);
   if (s.status === "blocked") return `waiting on ${s.blockedOn}`;
   if (s.status === "done") return s.nextAction ?? "finished its turn";
   return s.statusDetail;
@@ -112,6 +125,28 @@ async function end(who) {
   const s = await find(who);
   await post(`/api/sessions/${s.id}/close`, {});
   console.log(`ended ${label(s)}`);
+}
+
+async function pause(who, words) {
+  const until = words.join(" ");
+  if (who === "all") {
+    const { sessions } = await api("/api/state");
+    const due = sessions.filter((s) => s.live && !s.paused && s.role !== "operator" && (s.status === "waiting" || s.status === "done"));
+    if (due.length === 0) die("nothing needs you right now");
+    let last;
+    for (const s of due) last = await post(`/api/sessions/${s.id}/pause`, { until });
+    console.log(`paused ${due.map(label).join(", ")} ${pausedFor({ paused: last }).replace(/^paused /, "")}`);
+    return;
+  }
+  const s = await find(who);
+  const p = await post(`/api/sessions/${s.id}/pause`, { until });
+  console.log(`${label(s)} ${pausedFor({ paused: p })}`);
+}
+
+async function unpause(who) {
+  const s = await find(who);
+  const { was } = await post(`/api/sessions/${s.id}/unpause`, {});
+  console.log(was ? `unpaused ${label(s)}` : `${label(s)} wasn't paused`);
 }
 
 function start(args) {
@@ -219,6 +254,8 @@ const commands = {
   feed: () => (args[0] ? feed(args[0], args[1]) : die("sop feed <who> [n]")),
   say: () => (args[0] ? say(args[0], args.slice(1)) : die("sop say <who> <text>")),
   end: () => (args[0] ? end(args[0]) : die("sop end <who>")),
+  pause: () => (args[0] ? pause(args[0], args.slice(1)) : die("sop pause <who> [until]")),
+  unpause: () => (args[0] ? unpause(args[0]) : die("sop unpause <who>")),
   start: () => start(args),
 };
 if (!commands[cmd]) {

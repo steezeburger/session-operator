@@ -1,5 +1,6 @@
 import { type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { CleanupItem, CleanupResult, FeedItem, Session } from "../../server/types.ts";
+import { PauseMenu, unpauseSession, untilLabel } from "./Pause.tsx";
 import { WithPaths } from "./Paths.tsx";
 import { closedOutcome, focusRefs, RefList, sessionName } from "./Refs.tsx";
 import { imageFiles, ReplyBox } from "./ReplyBox.tsx";
@@ -298,11 +299,25 @@ export function SessionDetail({ session, onClose, decisions = [] }: { session: S
               </details>
             )}
             <div className="truncate text-code-dim">
+              {session.paused && <span className="text-white">paused {untilLabel(session)} · </span>}
               {session.status === "closed" ? closedOutcome(session).text : session.statusDetail} · {session.cwd}
             </div>
           </div>
           <div className="flex shrink-0 flex-col items-end gap-1">
             <div className="flex gap-1">
+              {session.role !== "operator" &&
+                (session.paused ? (
+                  <button
+                    type="button"
+                    onClick={() => void unpauseSession(session.id)}
+                    title={`Paused ${untilLabel(session)}. Back to its group, nudges and notifications on`}
+                    className="border border-code px-2 text-xs uppercase hover:bg-code hover:text-black hover:[text-shadow:none]"
+                  >
+                    unpause
+                  </button>
+                ) : (
+                  session.status !== "closed" && <PauseMenu ids={[session.id]} />
+                ))}
               {session.live && <EndSessionButton sessionId={session.id} onEnded={onClose} />}
               <button
                 type="button"

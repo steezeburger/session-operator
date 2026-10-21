@@ -228,6 +228,7 @@ export function parseTranscript(id: string, text: string, mtime: Date): Session 
     statusDetail,
     role: null,
     turnEnd: apiError || (lastTurn.type === "user" && hasToolError(lastTurn)) ? "failing" : turnEnded ? "finished" : "mid-turn",
+    paused: null,
     lastActivity: lastActivity.toISOString(),
   };
 }

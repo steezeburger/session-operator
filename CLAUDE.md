@@ -10,11 +10,12 @@ runs the others. Hono server on 127.0.0.1:4477, React + Tailwind v4 web app (Mat
 - `server/refs.ts` - card/issue/PR refs for a session, one adapter per tracker (Shortcut, GitHub)
 - `server/next-action.ts` - what a session needs from the user
 - `server/reply.ts` - types into a session's iTerm tab or tmux pane, `closeSession` (`/exit` + close it)
+- `server/pauses.ts` - paused sessions (kept in a temp JSON file) and the `until` parser
 - `server/cleanup.ts` - what ending a session can clean up (servers in its folder, a merged clean
   worktree and its branch, its scratch folder) and running the picked items after `/exit`
 - `web/src/` - `App.tsx` (list + operator strip), `SessionDetail.tsx` (panel), `Refs.tsx`
 - `bin/operator-hook` - the Claude Code hook; posts each event to the server
-- `bin/sop` - the operator's CLI (`ls`, `feed`, `say`, `end`, `start`, `operator`)
+- `bin/sop` - the operator's CLI (`ls`, `feed`, `say`, `end`, `pause`, `unpause`, `start`, `operator`)
 - `docs/operator-prompt.md` - appended to the operator's system prompt
 
 ## Running it
