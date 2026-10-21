@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, watch } from "node:fs";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { extname, isAbsolute, join, resolve } from "node:path";
@@ -14,7 +14,7 @@ import { mergedInto, refLinks, refsFor } from "./refs.ts";
 import { cleanupPlan, runCleanup, sessionTree } from "./cleanup.ts";
 import { parseUntil, pause, pauseOf, unpause } from "./pauses.ts";
 import { closeSession, liveSessions, sendReply } from "./reply.ts";
-import { fullReplies, mentionCounts, readFeed, scanSessions, toolResolvedSince } from "./sessions.ts";
+import { fullReplies, mentionCounts, PROJECTS_DIR, readFeed, scanSessions, toolResolvedSince } from "./sessions.ts";
 import type { Behavior, OperatorState, PendingDecision, PermissionUpdate, Session, SessionStatus } from "./types.ts";
 
 const PORT = Number(process.env.OPERATOR_PORT ?? 4477);
@@ -73,6 +73,34 @@ const listeners = new Set<() => void>();
 
 function changed() {
   for (const fn of listeners) fn();
+}
+
+// Push a change whenever a transcript is written, so the deck doesn't have to poll for them. A
+// streaming turn writes many times a second and each push rescans every transcript, so at most one
+// push per TRANSCRIPT_PUSH_MS, with a trailing one so the last write is never missed.
+const TRANSCRIPT_PUSH_MS = 500;
+let pushTimer: ReturnType<typeof setTimeout> | null = null;
+let pushAgain = false;
+function transcriptChanged() {
+  if (pushTimer) {
+    pushAgain = true;
+    return;
+  }
+  changed();
+  pushTimer = setTimeout(() => {
+    pushTimer = null;
+    if (pushAgain) {
+      pushAgain = false;
+      transcriptChanged();
+    }
+  }, TRANSCRIPT_PUSH_MS);
+}
+try {
+  watch(PROJECTS_DIR, { recursive: true }, (_event, file) => {
+    if (file?.endsWith(".jsonl")) transcriptChanged();
+  });
+} catch (e) {
+  console.warn(`not watching ${PROJECTS_DIR}, the deck will only see transcripts on its slow poll:`, e);
 }
 
 // osascript gets the text as argv, never interpolated into the script.
