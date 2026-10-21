@@ -14,7 +14,7 @@ import { nextActionFor } from "./next-action.ts";
 import { mergedInto, refLinks, refsFor, repoName } from "./refs.ts";
 import { cleanupPlan, runCleanup, sessionTree } from "./cleanup.ts";
 import { parseUntil, pause, pauseOf, unpause } from "./pauses.ts";
-import { closeSession, liveSessions, sendReply } from "./reply.ts";
+import { closeSession, focusSession, liveSessions, sendReply, terminalKinds } from "./reply.ts";
 import { fullReplies, mentionCounts, PROJECTS_DIR, readFeed, scanSessions, toolResolvedSince } from "./sessions.ts";
 import type { Behavior, OperatorState, PendingDecision, PermissionUpdate, Session, SessionStatus } from "./types.ts";
 
@@ -221,6 +221,7 @@ async function buildState(): Promise<OperatorState> {
         effort: null,
         nextLoading: false,
         live: false,
+        terminal: null,
         blockedOn: null,
         refs: [],
         refLinks: { shortcut: null, github: null },
@@ -240,8 +241,10 @@ async function buildState(): Promise<OperatorState> {
   }
 
   const live = await liveSessions();
+  const terminals = await terminalKinds([...live.values()]);
   for (const [id, s] of byId) {
     s.live = live.has(id);
+    s.terminal = terminals.get(live.get(id) ?? -1) ?? null;
     if (operatorIds.has(id)) s.role = "operator";
     if (s.live) continue;
     // No Claude process behind it: whatever the transcript last said, nobody can act on it now.
@@ -554,6 +557,18 @@ app.post("/api/sessions/:id/reply", async (c) => {
   }
   // Replying means you're on it. UserPromptSubmit does this too, but only for the server the hook posts to.
   if (unpause(c.req.param("id"))) changed();
+  return c.json({ ok: true });
+});
+
+// Brings its iTerm tab or tmux pane to the front.
+app.post("/api/sessions/:id/focus", async (c) => {
+  try {
+    const result = await focusSession(c.req.param("id"));
+    if (result === "not-running") return c.json({ error: "That session isn't running anymore" }, 409);
+    if (result === "no-terminal") return c.json({ error: "Couldn't find its iTerm tab or tmux pane" }, 409);
+  } catch {
+    return c.json({ error: "Couldn't focus it - tmux failed, or iTerm needs Automation allowed in System Settings" }, 500);
+  }
   return c.json({ ok: true });
 });
 
