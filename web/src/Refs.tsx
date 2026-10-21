@@ -23,8 +23,8 @@ export function focusRefs(s: Session): { own: Ref[]; mentioned: Ref[] } {
 const SHIPPED = "text-[#b48cff] [text-shadow:0_0_4px_rgb(180_140_255/0.6)]";
 
 /**
- * Where a closed session left its work: the PR decides if there is one, then the card,
- * then how its last turn ended.
+ * Where a closed session left its work: the PR decides if there is one, then a local merge
+ * of its branch, then the card, then how its last turn ended.
  */
 export function closedOutcome(s: Session): { text: string; cls: string } {
   const { own } = focusRefs(s);
@@ -35,6 +35,7 @@ export function closedOutcome(s: Session): { text: string; cls: string } {
     return { text: `left in review · ${refLabel(pr)} ${pr.state}`, cls: "text-blocked" };
   }
   if (pr?.state === "closed") return { text: `abandoned · ${refLabel(pr)} closed`, cls: "text-fail" };
+  if (!pr && s.mergedInto) return { text: `shipped · ${s.branch} merged into ${s.mergedInto}`, cls: SHIPPED };
   if (card && (card.state === "released" || card.state === "done")) {
     return { text: `shipped · ${refLabel(card)} ${card.state}`, cls: SHIPPED };
   }

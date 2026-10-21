@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type { Ref, RefLinks } from "./types.ts";
 
@@ -170,17 +172,55 @@ interface Cached<T> {
 }
 
 const cache = new Map<string, Cached<Ref>>();
+const merges = new Map<string, Cached<string>>();
 const repos = new Map<string, string | null>();
+const repoDirs = new Map<string, Promise<string | null>>();
 const inflight = new Set<string>();
+
+async function commonDir(dir: string): Promise<string | null> {
+  try {
+    const { stdout } = await run("git", ["-C", dir, "rev-parse", "--path-format=absolute", "--git-common-dir"]);
+    return dirname(stdout.trim());
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The main checkout behind a session's folder. A session that removed its own worktree leaves
+ * a cwd that's gone, so look for the repo it lived in: the nearest folder still there
+ * (repo/.worktrees/x), then a sibling named by dropping the worktree's suffix (repo-x).
+ */
+function repoDir(cwd: string): Promise<string | null> {
+  let dir = repoDirs.get(cwd);
+  if (!dir) {
+    dir = (async () => {
+      if (existsSync(cwd)) return commonDir(cwd);
+      let up = dirname(cwd);
+      while (!existsSync(up)) up = dirname(up);
+      const parts = basename(cwd).split("-");
+      for (let n = parts.length - 1; n > 0; n--) {
+        const sibling = join(dirname(cwd), parts.slice(0, n).join("-"));
+        if (existsSync(sibling)) return commonDir(sibling);
+      }
+      return commonDir(up);
+    })();
+    repoDirs.set(cwd, dir);
+  }
+  return dir;
+}
 
 async function githubRepo(cwd: string): Promise<string | null> {
   if (repos.has(cwd)) return repos.get(cwd) ?? null;
   let repo: string | null = null;
+  const dir = await repoDir(cwd);
   try {
-    const { stdout } = await run("git", ["-C", cwd, "remote", "get-url", "origin"]);
-    repo = stdout.trim().match(/github\.com[:/](.+?)(?:\.git)?$/)?.[1] ?? null;
+    if (dir) {
+      const { stdout } = await run("git", ["-C", dir, "remote", "get-url", "origin"]);
+      repo = stdout.trim().match(/github\.com[:/](.+?)(?:\.git)?$/)?.[1] ?? null;
+    }
   } catch {
-    // not a git repo or no origin
+    // no origin
   }
   repos.set(cwd, repo);
   return repo;
@@ -191,16 +231,45 @@ function fresh<T>(c: Cached<T> | undefined): c is Cached<T> {
 }
 
 // Fire-and-forget fill; the next state build picks the result up.
-function fill(key: string, ttl: number, load: () => Promise<Ref | null>, onReady: () => void) {
-  if (fresh(cache.get(key)) || inflight.has(key)) return;
+function fill<T>(store: Map<string, Cached<T>>, key: string, ttl: number, load: () => Promise<T | null>, onReady: () => void) {
+  if (fresh(store.get(key)) || inflight.has(key)) return;
   inflight.add(key);
   load()
     .catch(() => null)
     .then((value) => {
-      cache.set(key, { at: Date.now(), value, ttl: value ? ttl : MISS_TTL_MS });
+      store.set(key, { at: Date.now(), value, ttl: value ? ttl : MISS_TTL_MS });
       inflight.delete(key);
       onReady();
     });
+}
+
+async function loadLocalMerge(dir: string, branch: string): Promise<string | null> {
+  for (const main of ["main", "master"]) {
+    try {
+      await run("git", ["-C", dir, "rev-parse", "--verify", "--quiet", main]);
+    } catch {
+      continue;
+    }
+    const { stdout } = await run("git", [
+      "-C", dir, "log", main, "--first-parent", "--merges", "--fixed-strings",
+      "--grep", `Merge branch '${branch}'`, "--format=%h", "-1",
+    ]);
+    return stdout.trim() ? main : null;
+  }
+  return null;
+}
+
+/**
+ * The main branch, when this session's branch went into it as a local merge commit
+ * ("Merge branch 'x'"). Works after the branch is deleted, which a cleaned-up session does.
+ */
+export async function mergedInto(cwd: string, branch: string | null, onReady: () => void): Promise<string | null> {
+  if (!branch || branch === "main" || branch === "master") return null;
+  const dir = await repoDir(cwd);
+  if (!dir) return null;
+  const key = `merge:${dir}#${branch}`;
+  fill(merges, key, 2 * 60 * 1000, () => loadLocalMerge(dir, branch), onReady);
+  return merges.get(key)?.value ?? null;
 }
 
 async function loadBranchPr(repo: string, branch: string): Promise<Ref | null> {
@@ -234,7 +303,7 @@ export async function refsFor(
   // The branch's PR is looked up by head ref, not by a number in its name.
   if (repo && branch && branch !== "main" && branch !== "master" && branch !== "HEAD") {
     const key = `branch:${repo}#${branch}`;
-    fill(key, github.ttl, () => loadBranchPr(repo, branch), onReady);
+    fill(cache, key, github.ttl, () => loadBranchPr(repo, branch), onReady);
     add(cache.get(key)?.value, "own");
   }
   for (const t of TRACKERS) {
@@ -243,7 +312,7 @@ export async function refsFor(
       const key = t.key(id, repo);
       if (!key) continue;
       const k = `${t.name}:${key}`;
-      fill(k, t.ttl, () => t.load(id, repo), onReady);
+      fill(cache, k, t.ttl, () => t.load(id, repo), onReady);
       add(cache.get(k)?.value, own.has(id) ? "own" : "mention");
     }
   }

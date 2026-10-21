@@ -109,7 +109,8 @@ export function parseTranscript(id: string, text: string, mtime: Date): Session 
       continue;
     }
     if (r.cwd) cwd = r.cwd;
-    if (r.gitBranch) branch = r.gitBranch;
+    // Once a session removes its own worktree, git reports HEAD; keep the last real branch.
+    if (r.gitBranch && r.gitBranch !== "HEAD") branch = r.gitBranch;
     if (r.type === "ai-title" && r.aiTitle) title = r.aiTitle;
     if (r.type === "last-prompt" && r.lastPrompt) lastPrompt = r.lastPrompt;
     if (r.isSidechain) continue;
@@ -160,7 +161,7 @@ export function parseTranscript(id: string, text: string, mtime: Date): Session 
     id,
     cwd,
     project: basename(cwd),
-    branch: branch && branch !== "HEAD" ? branch : null,
+    branch: branch ?? null,
     title: clip(title, 80),
     lastPrompt: clip(lastPrompt),
     lastReply: clipTail(lastReply),
@@ -172,6 +173,7 @@ export function parseTranscript(id: string, text: string, mtime: Date): Session 
     blockedOn: null,
     refs: [],
     refLinks: { shortcut: null, github: null },
+    mergedInto: null,
     status,
     statusDetail,
     role: null,

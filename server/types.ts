@@ -25,6 +25,8 @@ export interface Session {
   refs: Ref[];
   /** URL prefixes a card or issue number is appended to, so any mention can link out. */
   refLinks: RefLinks;
+  /** The main branch, when the session's branch went into it as a local merge commit (no PR). Closed sessions only. */
+  mergedInto: string | null;
   status: SessionStatus;
   statusDetail: string;
   /** "operator" for the session started with `sop operator`, which runs the others. */
