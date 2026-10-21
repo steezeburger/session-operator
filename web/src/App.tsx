@@ -469,9 +469,9 @@ function PendingCard({
   );
 }
 
-// Worktrees live in <repo>/.worktrees/<name>; name the repo, the card says which worktree.
+// Name the repo, not the worktree folder; the branch or card says which worktree.
 function repoName(s: Session) {
-  return s.cwd.match(/\/([^/]+)\/\.worktrees\//)?.[1] ?? s.project;
+  return s.repo ?? s.project;
 }
 
 function SessionRow({ s, now, leaving, onOpen }: { s: Session; now: number; leaving: string | undefined; onOpen: () => void }) {

@@ -10,7 +10,7 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { nextActionFor } from "./next-action.ts";
-import { mergedInto, refLinks, refsFor } from "./refs.ts";
+import { mergedInto, refLinks, refsFor, repoName } from "./refs.ts";
 import { cleanupPlan, runCleanup, sessionTree } from "./cleanup.ts";
 import { closeSession, liveSessions, sendReply } from "./reply.ts";
 import { fullReplies, mentionCounts, PROJECTS_DIR, readFeed, scanSessions, toolResolvedSince } from "./sessions.ts";
@@ -205,6 +205,7 @@ async function buildState(): Promise<OperatorState> {
         id,
         cwd: hs.cwd,
         project: projectName(hs.cwd),
+        repo: null,
         branch: null,
         title: null,
         customTitle: null,
@@ -302,6 +303,7 @@ async function buildState(): Promise<OperatorState> {
   await Promise.all(
     [...byId.values()].map(async (s) => {
       s.refLinks = await refLinks(s.cwd);
+      s.repo = await repoName(s.cwd);
       if (s.status === "idle" || s.role === "operator") return;
       s.refs = await refsFor(s.cwd, s.branch, mentionCounts.get(s.id) ?? new Map(), changed);
       if (s.status === "closed") s.mergedInto = await mergedInto(s.cwd, s.branch, changed);

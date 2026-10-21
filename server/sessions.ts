@@ -208,6 +208,7 @@ export function parseTranscript(id: string, text: string, mtime: Date): Session 
     id,
     cwd,
     project: basename(cwd),
+    repo: null,
     branch: branch ?? null,
     title: clip(title, 80),
     customTitle: clip(customTitle, 80),
