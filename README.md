@@ -128,3 +128,7 @@ echo '{"hook_event_name":"PermissionRequest","session_id":"demo","cwd":"/tmp/dem
   | bin/operator-hook
 # click Approve at http://127.0.0.1:4477 and the hook prints its decision JSON
 ```
+
+## License
+
+MIT, see [LICENSE](LICENSE).
