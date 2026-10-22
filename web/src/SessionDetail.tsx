@@ -12,6 +12,7 @@ const KIND_STYLE: Record<FeedItem["kind"], { label: string; cls: string; labelCl
   user: { label: "you", cls: "border-white bg-white/5 py-1 text-white [text-shadow:none]", labelCls: "text-white/50" },
   assistant: { label: "claude", cls: "border-code text-code [text-shadow:0_0_6px_rgb(0_255_65/0.6)]", labelCls: "text-code-dim" },
   tool: { label: "tool", cls: "border-tool text-xs text-code-dim [text-shadow:none]", labelCls: "text-tool-dim" },
+  skill: { label: "skill", cls: "border-tool text-xs text-code-dim [text-shadow:none]", labelCls: "text-tool-dim" },
   error: { label: "error", cls: "border-fail text-fail [text-shadow:0_0_4px_rgb(255_42_42/0.6)]", labelCls: "text-fail/70" },
 };
 
@@ -61,6 +62,30 @@ function ToolBlock({ items }: { items: FeedItem[] }) {
             </span>
           ))}
         </button>
+      )}
+    </div>
+  );
+}
+
+// The markdown a skill loads into the turn: one line with its name until clicked open.
+function SkillBlock({ item, session }: { item: FeedItem; session: Session }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className={`border-l-2 bg-code-dark/40 px-2 py-1 ${KIND_STYLE.skill.cls}`}>
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="flex w-full items-center gap-2 text-left hover:text-code"
+        title={time(item.at)}
+      >
+        <span className="bg-tool px-1 text-[10px] font-bold uppercase tracking-wider text-black">skill</span>
+        <span className="truncate">{item.text}</span>
+        <span className="ml-auto shrink-0 text-[10px] uppercase tracking-wider">{open ? "fold" : "show"}</span>
+      </button>
+      {open && item.body && (
+        <div className="mt-1 whitespace-pre-wrap break-words">
+          <Linkified text={item.body} session={session} />
+        </div>
       )}
     </div>
   );
@@ -386,6 +411,7 @@ export function SessionDetail({ session, onClose, decisions = [] }: { session: S
             {feed && feedRows(feed).map((row, n) => {
               if (row.kind === "tools") return <ToolBlock key={`tools-${row.items[0]?.at}-${row.items[0]?.text}`} items={row.items} />;
               const { item, i } = row;
+              if (item.kind === "skill") return <SkillBlock key={`${item.at}-${i}`} item={item} session={session} />;
               const k = KIND_STYLE[item.kind];
               // Each of your messages starts a turn: a rule and room above it, so the chat
               // reads in chunks and your own words are the landmarks when scrolling back.
