@@ -125,8 +125,11 @@ export interface OperatorState {
 export type Behavior = "allow" | "deny";
 
 export interface FeedItem {
-  kind: "user" | "assistant" | "tool" | "error" | "skill";
-  /** For a skill, its name (and the args Claude passed it); the markdown it loaded is in `body`. */
+  kind: "user" | "assistant" | "tool" | "error" | "skill" | "agent";
+  /**
+   * For a skill, its name (and the args Claude passed it), with the markdown it loaded in `body`.
+   * For an agent, who sent it, with what they said in `body`.
+   */
   text: string;
   body?: string;
   at: string | null;
