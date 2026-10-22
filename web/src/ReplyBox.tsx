@@ -206,9 +206,21 @@ export function ReplyBox({
             onChange={(e) => setText(e.target.value)}
             onPaste={(e) => {
               const files = imageFiles(e.clipboardData.files);
-              if (files.length === 0) return;
+              if (files.length > 0) {
+                e.preventDefault();
+                return addImages(files);
+              }
+              // Chrome 155 drops a paste when the clipboard changes mid-paste, which dictation apps
+              // trip, though the event has the text. Insert it ourselves.
+              // https://issues.chromium.org/issues/568453825
+              const pasted = e.clipboardData.getData("text/plain");
+              if (!pasted) return;
               e.preventDefault();
-              addImages(files);
+              const el = e.currentTarget;
+              if (!document.execCommand("insertText", false, pasted)) {
+                el.setRangeText(pasted, el.selectionStart, el.selectionEnd, "end");
+                setText(el.value);
+              }
             }}
             onKeyDown={(e) => {
               // Enter sends, Shift+Enter is a new line.
