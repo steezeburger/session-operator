@@ -1,4 +1,4 @@
-import { type CSSProperties, Fragment, type ReactNode, type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, Fragment, type ReactNode, type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import type { Behavior, Effort, OperatorState, PendingDecision, PermissionUpdate, Session, SessionStatus } from "../../server/types.ts";
 import { setFavicon } from "./favicon.ts";
@@ -139,6 +139,23 @@ function useCalmState(live: OperatorState | null, list: RefObject<HTMLElement | 
   // every row it moves has been shaded.
   const shading = useRef(new Set<string>());
   const counted = useRef(new Set<string>());
+  // Moving a row takes it off the page for a moment, which drops focus from a box in it. The box
+  // you're in, and its caret, from just before the list changes.
+  const focused = useRef<{ el: Element; caret: [number | null, number | null] } | null>(null);
+  const show = (next: OperatorState) => {
+    const el = document.activeElement;
+    focused.current = el && list.current?.contains(el)
+      ? { el, caret: el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement ? [el.selectionStart, el.selectionEnd] : [null, null] }
+      : null;
+    setShown(next);
+  };
+  useLayoutEffect(() => {
+    const f = focused.current;
+    focused.current = null;
+    if (!f || !f.el.isConnected || document.activeElement === f.el || !(f.el instanceof HTMLElement)) return;
+    f.el.focus({ preventScroll: true });
+    if (f.el instanceof HTMLTextAreaElement || f.el instanceof HTMLInputElement) f.el.setSelectionRange(f.caret[0], f.caret[1]);
+  }, [shown]);
 
   useEffect(() => {
     const el = list.current;
@@ -226,8 +243,8 @@ function useCalmState(live: OperatorState | null, list: RefObject<HTMLElement | 
     if (shown && JSON.stringify(live) === JSON.stringify(shown)) return;
     if (moves) counted.current = new Set();
     const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (moves && animate && !still && document.startViewTransition) document.startViewTransition(() => flushSync(() => setShown(live)));
-    else setShown(live);
+    if (moves && animate && !still && document.startViewTransition) document.startViewTransition(() => flushSync(() => show(live)));
+    else show(live);
   }, [live, shown, settled, animate]);
 
   // Row id -> where it's going.
