@@ -26,6 +26,7 @@ interface TranscriptRecord {
   uuid?: string;
   parentUuid?: string | null;
   sourceToolUseID?: string;
+  origin?: { kind?: string; name?: string };
   message?: { stop_reason?: string | null; content?: unknown };
   attachment?: { type?: string; prompt?: unknown; origin?: { kind?: string } };
 }
@@ -107,7 +108,8 @@ function typedPrompt(r: TranscriptRecord): string | null {
   const a = r.attachment;
   if (r.type === "attachment" && a?.type === "queued_command" && a.origin?.kind === "human" && typeof a.prompt === "string") return a.prompt.trim() || null;
   const content = r.message?.content;
-  if (r.type !== "user" || typeof content !== "string") return null;
+  // isMeta is the harness talking as you: a skill's markdown, image notes, scheduled prompts.
+  if (r.type !== "user" || r.isMeta || typeof content !== "string") return null;
   return content.trimStart().startsWith("<") ? null : content.trim() || null;
 }
 
@@ -300,8 +302,8 @@ export async function scanSessions(): Promise<Session[]> {
 }
 
 const FEED_TEXT_MAX = 4000;
-// A skill's markdown shows folded, so it can keep far more before losing its middle.
-const SKILL_BODY_MAX = 20000;
+// A skill's markdown or a subagent's report shows folded, so it can keep far more before losing its middle.
+const FOLDED_BODY_MAX = 20000;
 const SESSION_ID_RE = /^[0-9a-f-]{36}$/;
 
 function toolLine(block: { name?: string; input?: Record<string, unknown> }): string {
@@ -337,20 +339,41 @@ interface FeedContext {
   commands: Map<string, string>;
 }
 
-// A skill loading its markdown into the turn is an isMeta user record, either answering a Skill
-// call or hanging off the slash command you typed. Told by those links, never by its text.
-function skillItem(r: TranscriptRecord, ctx: FeedContext): FeedItem | null {
-  if (r.type !== "user" || !r.isMeta) return null;
-  const name = (r.sourceToolUseID && ctx.skillCalls.get(r.sourceToolUseID)) || (r.parentUuid && ctx.commands.get(r.parentUuid));
-  if (!name) return null;
+function recordText(r: TranscriptRecord): string {
   const content = r.message?.content;
-  const body = typeof content === "string"
-    ? content
-    : Array.isArray(content)
-      ? (content as { type?: string; text?: string }[]).filter((b) => b?.type === "text" && b.text).map((b) => b.text).join("\n\n")
-      : "";
-  if (!body.trim() || body.trimStart().startsWith("<")) return null;
-  return { kind: "skill", text: name, body: clipFeed(body.trim(), SKILL_BODY_MAX), at: r.timestamp ?? null };
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return (content as { type?: string; text?: string }[]).filter((b) => b?.type === "text" && b.text).map((b) => b.text).join("\n\n");
+}
+
+// "Another Claude session sent a message:\n<agent-message from=..>\n[Subagent hand-back] ...
+// The report follows:\n  <report, indented>\n</agent-message>" -> the report.
+function agentReport(text: string): string {
+  const lines = text
+    .replace(/^Another Claude session sent a message:\s*/, "")
+    .replace(/^<agent-message[^>]*>\n?/, "")
+    .replace(/\n?<\/agent-message>\s*$/, "")
+    .split("\n");
+  if (lines[0]?.startsWith("[Subagent hand-back]")) lines.shift();
+  const indented = lines.every((l) => !l.trim() || l.startsWith("  "));
+  return (indented ? lines.map((l) => l.slice(2)) : lines).join("\n").trim();
+}
+
+// isMeta user records are the harness talking as you, so none of them show as "you". A skill
+// loading its markdown answers a Skill call or hangs off the slash command you typed; another
+// session's message carries a peer origin. Told by those links, never by the text. Image resize
+// notes ("[Image: original WxH, displayed at ...]") go: they're only for Claude's clicks.
+function metaItems(r: TranscriptRecord, ctx: FeedContext): FeedItem[] | null {
+  if (r.type !== "user" || !r.isMeta) return null;
+  const text = recordText(r).trim();
+  const at = r.timestamp ?? null;
+  const skill = (r.sourceToolUseID && ctx.skillCalls.get(r.sourceToolUseID)) || (r.parentUuid && ctx.commands.get(r.parentUuid));
+  if (skill && text && !text.startsWith("<")) return [{ kind: "skill", text: skill, body: clipFeed(text, FOLDED_BODY_MAX), at }];
+  if (r.origin?.kind === "peer") {
+    return [{ kind: "agent", text: r.origin.name || "subagent", body: clipFeed(agentReport(text), FOLDED_BODY_MAX), at }];
+  }
+  if (text && text.split("\n").every((l) => l.startsWith("[Image: original "))) return [];
+  return null;
 }
 
 function feedItems(line: string, ctx: FeedContext): FeedItem[] {
@@ -362,8 +385,8 @@ function feedItems(line: string, ctx: FeedContext): FeedItem[] {
   }
   if (r.isSidechain) return [];
   const at = r.timestamp ?? null;
-  const skill = skillItem(r, ctx);
-  if (skill) return [skill];
+  const meta = metaItems(r, ctx);
+  if (meta) return meta;
   // Messages typed while Claude is mid-turn are stored as queued_command attachments, not user records.
   const a = r.attachment;
   if (r.type === "attachment" && a?.type === "queued_command" && a.origin?.kind === "human" && typeof a.prompt === "string") {
@@ -481,7 +504,7 @@ export async function readFeed(id: string): Promise<FeedItem[] | null> {
         // A skill run again loads a note and then its markdown, as two records: one row.
         const last = items.at(-1);
         if (item.kind === "skill" && last?.kind === "skill" && last.text === item.text) {
-          items[items.length - 1] = { ...last, body: clipFeed(`${last.body}\n\n${item.body}`, SKILL_BODY_MAX) };
+          items[items.length - 1] = { ...last, body: clipFeed(`${last.body}\n\n${item.body}`, FOLDED_BODY_MAX) };
         } else items.push(item);
       }
     }

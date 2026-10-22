@@ -13,6 +13,7 @@ const KIND_STYLE: Record<FeedItem["kind"], { label: string; cls: string; labelCl
   assistant: { label: "claude", cls: "border-code text-code [text-shadow:0_0_6px_rgb(0_255_65/0.6)]", labelCls: "text-code-dim" },
   tool: { label: "tool", cls: "border-tool text-xs text-code-dim [text-shadow:none]", labelCls: "text-tool-dim" },
   skill: { label: "skill", cls: "border-tool text-xs text-code-dim [text-shadow:none]", labelCls: "text-tool-dim" },
+  agent: { label: "agent", cls: "border-tool text-xs text-code-dim [text-shadow:none]", labelCls: "text-tool-dim" },
   error: { label: "error", cls: "border-fail text-fail [text-shadow:0_0_4px_rgb(255_42_42/0.6)]", labelCls: "text-fail/70" },
 };
 
@@ -67,19 +68,23 @@ function ToolBlock({ items }: { items: FeedItem[] }) {
   );
 }
 
-// The markdown a skill loads into the turn: one line with its name until clicked open.
-function SkillBlock({ item, session }: { item: FeedItem; session: Session }) {
+// The markdown a skill loads into the turn, or a subagent's report: one line with its name
+// (and how the report starts) until clicked open.
+function FoldBlock({ item, session }: { item: FeedItem; session: Session }) {
   const [open, setOpen] = useState(false);
+  const k = KIND_STYLE[item.kind];
+  const start = item.kind === "agent" ? item.body?.split("\n").find((l) => l.trim()) : undefined;
   return (
-    <div className={`border-l-2 bg-code-dark/40 px-2 py-1 ${KIND_STYLE.skill.cls}`}>
+    <div className={`border-l-2 bg-code-dark/40 px-2 py-1 ${k.cls}`}>
       <button
         type="button"
         onClick={() => setOpen(!open)}
         className="flex w-full items-center gap-2 text-left hover:text-code"
         title={time(item.at)}
       >
-        <span className="bg-tool px-1 text-[10px] font-bold uppercase tracking-wider text-black">skill</span>
-        <span className="truncate">{item.text}</span>
+        <span className="bg-tool px-1 text-[10px] font-bold uppercase tracking-wider text-black">{k.label}</span>
+        <span className={start ? "shrink-0" : "truncate"}>{item.text}</span>
+        {start && !open && <span className="truncate opacity-70">{start}</span>}
         <span className="ml-auto shrink-0 text-[10px] uppercase tracking-wider">{open ? "fold" : "show"}</span>
       </button>
       {open && item.body && (
@@ -411,7 +416,7 @@ export function SessionDetail({ session, onClose, decisions = [] }: { session: S
             {feed && feedRows(feed).map((row, n) => {
               if (row.kind === "tools") return <ToolBlock key={`tools-${row.items[0]?.at}-${row.items[0]?.text}`} items={row.items} />;
               const { item, i } = row;
-              if (item.kind === "skill") return <SkillBlock key={`${item.at}-${i}`} item={item} session={session} />;
+              if (item.kind === "skill" || item.kind === "agent") return <FoldBlock key={`${item.at}-${i}`} item={item} session={session} />;
               const k = KIND_STYLE[item.kind];
               // Each of your messages starts a turn: a rule and room above it, so the chat
               // reads in chunks and your own words are the landmarks when scrolling back.
