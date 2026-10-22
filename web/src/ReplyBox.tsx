@@ -1,3 +1,4 @@
+import { KeyHint } from "./keys.tsx";
 import { type Dispatch, type SetStateAction, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 
 // Unsent text per session, shared by every reply box for that session, so closing the
@@ -154,7 +155,7 @@ export function ReplyBox({
     <div
       className="mt-1.5"
       onClick={(e) => e.stopPropagation()}
-      // Escape still gets out, so it closes the session panel with the cursor in here.
+      // Escape still gets out, so the keys can take the cursor out of here.
       onKeyDown={(e) => e.key !== "Escape" && e.stopPropagation()}
       // Inside the session panel, the panel takes drops; inline boxes take their own.
       onDragOver={lifted ? undefined : (e) => e.preventDefault()}
@@ -188,11 +189,13 @@ export function ReplyBox({
               <button
                 key={say}
                 type="button"
+                data-pick
                 onClick={() => void send(say)}
                 disabled={sending}
                 title={say}
                 className="max-w-full truncate border border-needs px-2 text-left text-sm font-bold text-needs hover:bg-needs hover:text-black hover:[text-shadow:none]"
               >
+                <KeyHint />
                 say "{say}"
               </button>
             ))}
