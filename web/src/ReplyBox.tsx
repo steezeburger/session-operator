@@ -154,7 +154,8 @@ export function ReplyBox({
     <div
       className="mt-1.5"
       onClick={(e) => e.stopPropagation()}
-      onKeyDown={(e) => e.stopPropagation()}
+      // Escape still gets out, so it closes the session panel with the cursor in here.
+      onKeyDown={(e) => e.key !== "Escape" && e.stopPropagation()}
       // Inside the session panel, the panel takes drops; inline boxes take their own.
       onDragOver={lifted ? undefined : (e) => e.preventDefault()}
       onDrop={

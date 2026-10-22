@@ -67,8 +67,8 @@ export function PauseMenu({
   }, [open]);
 
   return (
-    // Clicks stay here, so a card or row around it doesn't open too.
-    <span ref={box} className={`relative flex ${className}`} onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+    // Clicks and keys stay here, so a card or row around it doesn't open too. Escape gets out.
+    <span ref={box} className={`relative flex ${className}`} onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.key !== "Escape" && e.stopPropagation()}>
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}

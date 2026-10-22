@@ -24,7 +24,7 @@ export function TermButton({ s, className }: { s: Session; className?: string })
         e.stopPropagation();
         void focus();
       }}
-      onKeyDown={(e) => e.stopPropagation()}
+      onKeyDown={(e) => e.key !== "Escape" && e.stopPropagation()}
       title={error ?? `Bring its ${s.terminal === "tmux" ? "tmux pane" : "iTerm tab"} to the front`}
       className={
         className
