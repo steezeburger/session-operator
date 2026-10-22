@@ -11,7 +11,7 @@ export type TrackerName = "shortcut" | "github";
 /** What a session needs to resolve and link ids: its GitHub repo, the Shortcut workspace. */
 export interface TrackerContext {
   /** "owner/repo" from the session's origin remote. */
-  repo: string | null;
+  githubRepo: string | null;
   /** The workspace in Shortcut's app URLs. Only known with SHORTCUT_API_TOKEN. */
   shortcutSlug: string | null;
 }

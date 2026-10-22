@@ -116,7 +116,7 @@ export function WithMentions({ text, s }: { text: string; s: Pick<Session, "refs
   const parts: ReactNode[] = [];
   let at = 0;
   for (const m of parseMentions(text)) {
-    const id = resolveId(m.tracker, m.id, s.trackers.repo);
+    const id = resolveId(m.tracker, m.id, s.trackers.githubRepo);
     const ref = id ? s.refs.find((r) => r.key === refKey(m.tracker, id)) : undefined;
     const href = ref?.url ?? (id && m.explicit ? urlFor(m.tracker, id, s.trackers) : null);
     if (!href) continue;

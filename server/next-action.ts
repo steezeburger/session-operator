@@ -75,10 +75,10 @@ const inflight = new Set<string>();
 async function candidateLinks(text: string, cwd: string): Promise<string[]> {
   const links = new Set(text.match(URL_RE) ?? []);
   const ctx = await trackerContext(cwd);
-  if (ctx.repo) for (const m of text.matchAll(PR_RE)) links.add(`https://github.com/${ctx.repo}/pull/${m[1]}`);
+  if (ctx.githubRepo) for (const m of text.matchAll(PR_RE)) links.add(`https://github.com/${ctx.githubRepo}/pull/${m[1]}`);
   // sc-123, owner/repo#123: anything that says what it is, wherever it lives.
   for (const m of parseMentions(text)) {
-    const id = m.explicit ? resolveId(m.tracker, m.id, ctx.repo) : null;
+    const id = m.explicit ? resolveId(m.tracker, m.id, ctx.githubRepo) : null;
     const url = id && urlFor(m.tracker, id, ctx);
     if (url) links.add(url);
   }

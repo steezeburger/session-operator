@@ -7,10 +7,11 @@ export interface Session {
   cwd: string;
   project: string;
   /**
-   * The repo the folder belongs to, named after its main checkout, so a worktree reads the same
-   * wherever it lives (repo/.worktrees/x, repo/.claude/worktrees/x, a sibling repo-x). Null outside git.
+   * The folder name of the main checkout this folder belongs to, so a worktree reads the same
+   * wherever it lives (repo/.worktrees/x, repo/.claude/worktrees/x, a sibling repo-x). Not the
+   * GitHub repo, that's trackers.githubRepo. Null outside git.
    */
-  repo: string | null;
+  checkoutName: string | null;
   branch: string | null;
   /** Claude Code's AI title for the session. Set once near the start, never updated. */
   title: string | null;

@@ -188,7 +188,7 @@ function shortcutSlug(): Promise<string | null> {
 /** The session's repo and Shortcut workspace, for resolving and linking mentions. */
 export async function trackerContext(cwd: string): Promise<TrackerContext> {
   const [repo, slug] = await Promise.all([githubRepo(cwd), shortcutSlug()]);
-  return { repo, shortcutSlug: slug };
+  return { githubRepo: repo, shortcutSlug: slug };
 }
 
 /** Tallies tracker mentions in one message into counts keyed "<tracker>:<id>", ids as written. */
@@ -245,8 +245,8 @@ function repoDir(cwd: string): Promise<string | null> {
   return dir;
 }
 
-/** The name of the main checkout behind `cwd`: the same for every worktree of a repo. */
-export async function repoName(cwd: string): Promise<string | null> {
+/** The folder name of the main checkout behind `cwd`: the same for every worktree of a repo. */
+export async function checkoutName(cwd: string): Promise<string | null> {
   const dir = await repoDir(cwd);
   return dir ? basename(dir) : null;
 }
