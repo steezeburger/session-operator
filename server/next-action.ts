@@ -4,6 +4,8 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { parseMentions, resolveId, urlFor } from "./mentions.ts";
+import { trackerContext } from "./refs.ts";
 
 const run = promisify(execFile);
 
@@ -69,25 +71,17 @@ const MAX_CONCURRENT = 2;
 
 const cache = new Map<string, { hash: string; result: NextAction | null }>();
 const inflight = new Set<string>();
-const remotes = new Map<string, string | null>();
-
-async function githubRepo(cwd: string): Promise<string | null> {
-  if (remotes.has(cwd)) return remotes.get(cwd) ?? null;
-  let repo: string | null = null;
-  try {
-    const { stdout } = await run("git", ["-C", cwd, "remote", "get-url", "origin"]);
-    repo = stdout.trim().match(/github\.com[:/](.+?)(?:\.git)?$/)?.[1] ?? null;
-  } catch {
-    // not a git repo or no origin
-  }
-  remotes.set(cwd, repo);
-  return repo;
-}
 
 async function candidateLinks(text: string, cwd: string): Promise<string[]> {
   const links = new Set(text.match(URL_RE) ?? []);
-  const repo = await githubRepo(cwd);
-  if (repo) for (const m of text.matchAll(PR_RE)) links.add(`https://github.com/${repo}/pull/${m[1]}`);
+  const ctx = await trackerContext(cwd);
+  if (ctx.githubRepo) for (const m of text.matchAll(PR_RE)) links.add(`https://github.com/${ctx.githubRepo}/pull/${m[1]}`);
+  // sc-123, owner/repo#123: anything that says what it is, wherever it lives.
+  for (const m of parseMentions(text)) {
+    const id = m.explicit ? resolveId(m.tracker, m.id, ctx.githubRepo) : null;
+    const url = id && urlFor(m.tracker, id, ctx);
+    if (url) links.add(url);
+  }
   return [...links];
 }
 

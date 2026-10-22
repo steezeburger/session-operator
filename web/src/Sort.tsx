@@ -105,8 +105,8 @@ export const SORTS: SortDef[] = [
     key: "repo",
     label: "repo",
     dir: "asc",
-    value: (s) => (s.repo ?? s.project).toLowerCase(),
-    cell: (s) => s.repo ?? s.project,
+    value: (s) => (s.checkoutName ?? s.project).toLowerCase(),
+    cell: (s) => s.checkoutName ?? s.project,
   },
   {
     key: "state",

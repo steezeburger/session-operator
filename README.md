@@ -9,8 +9,13 @@ session is doing, and when one needs a permission you can approve or deny it her
 
 ## Run it
 
+Needs macOS, Node, pnpm, the `claude` CLI and `gh` (logged in). Replies and ending
+sessions type into iTerm2 or tmux (tmux inside iTerm2 works too); other terminals can
+still watch, approve and answer.
+
 ```sh
 pnpm install
+bin/sop setup   # hooks into ~/.claude/settings.json, sop into ~/.local/bin (--dry-run to preview)
 pnpm dev        # server on 127.0.0.1:4477, UI on http://127.0.0.1:5178
 ```
 
@@ -25,6 +30,26 @@ Env vars:
 - `OPERATOR_PORT` - server port (default 4477)
 - `OPERATOR_NOTIFY=0` - turn off macOS notifications
 - `OPERATOR_URL` / `OPERATOR_TIMEOUT_MS` - read by `bin/operator-hook` (defaults `http://127.0.0.1:4477`, `3600000`)
+- `OPERATOR_TERMINAL=tmux` - make `sop start` open sessions in tmux instead of iTerm2 tabs
+- `SHORTCUT_API_TOKEN` - only if you track work in Shortcut
+
+## Cards, issues and PRs
+
+Each session shows the work it's for, found from its branch:
+
+- **GitHub PRs** - the PR whose head is the session's branch, with its state.
+- **GitHub issues** - a branch that leads with the issue number (`123-fix-login`, what
+  `gh issue develop` makes; also `issue-123-...`, `feat/123-...`), plus any issue the
+  branch's PR closes ("Closes #123", or `owner/repo#123` in another repo). If the issue is on
+  a GitHub Project, its Status column shows as the state, and Done counts as shipped, unless
+  it was closed as not planned. That needs the `read:project` scope, which `sop setup`
+  asks gh for; without it you get open/closed/done.
+- **Shortcut cards** - a branch that names one (`sc-123/...`), when `SHORTCUT_API_TOKEN` is set.
+
+Cards, issues and PRs that Claude only mentions are listed separately and link out too.
+`sc-123`, `PR #123`, `owner/repo#123` and full GitHub or Shortcut URLs link wherever they
+appear; a bare `#123` only links once it turns out to be a real issue or PR in the session's
+repo.
 
 ## The operator
 
@@ -82,17 +107,17 @@ Claude Code ──hook stdin──▶ bin/operator-hook ──POST /api/hook─�
 - **Localhost only.** The server binds 127.0.0.1, rejects other Host headers (DNS
   rebinding) and non-localhost Origins, and POSTs must be `application/json`. No auth
   past that.
-- State is in memory. Restarting the server drops pending requests, and their hooks fall
-  back to the terminal prompt.
+- State is in memory. Restarting the server drops pending requests, and their hooks
+  register them again once it's back.
 
 API: `POST /api/hook`, `GET /api/state`, `POST /api/decisions/:id` with
 `{"behavior":"allow"|"deny"}`, `GET /api/decisions/:id/wait`, `GET /api/events` (SSE).
 
 ## Hook setup
 
-Add this to `~/.claude/settings.json`, merged into any `hooks` you already have (you
-already have a `PreToolUse` Bash entry and a `SessionEnd` entry - add these alongside
-them, don't replace them):
+`bin/sop setup` does this for you: it merges these into `~/.claude/settings.json` next to
+any hooks you already have, with this checkout's path, and backs the file up first. By
+hand, it's:
 
 ```json
 {

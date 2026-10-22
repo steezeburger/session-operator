@@ -3,8 +3,8 @@
 // reading, messaging, starting and ending Claude Code sessions through the server.
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -12,6 +12,7 @@ const BASE = process.env.OPERATOR_URL ?? "http://127.0.0.1:4477";
 
 const USAGE = `sop - session operator
 
+  sop setup [--dry-run]           install the hooks in ~/.claude/settings.json and sop in ~/.local/bin
   sop operator [claude args...]   resume the operator session in this terminal (--new for a fresh one)
 
   sop ls                          every session: who, status, what it needs
@@ -29,8 +30,8 @@ const USAGE = `sop - session operator
       --badge <label>              iTerm badge for the new tab, or tmux window name
       --term iterm|tmux            where to start it (default $OPERATOR_TERMINAL, else iterm)
 
-<who> is a session id prefix, a card like sc-8121, a project name, part of a branch, or part of
-the name you gave it with /rename.`;
+<who> is a session id prefix, a card or issue like sc-8121 or 123, a project name, part of a
+branch, or part of the name you gave it with /rename.`;
 
 function die(msg) {
   console.error(msg);
@@ -53,7 +54,7 @@ const post = (path, body) =>
   api(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
 function label(s) {
-  const card = s.refs.find((r) => r.source === "own" && r.kind === "card");
+  const card = s.refs.find((r) => r.source === "own" && r.kind === "card") ?? s.refs.find((r) => r.source === "own" && r.kind === "issue");
   if (card) return card.label;
   return s.branch && s.branch !== "main" ? `${s.project} (${s.branch})` : s.project;
 }
@@ -80,7 +81,7 @@ async function find(who) {
       s.id.startsWith(w) ||
       (w === "operator" && s.role === "operator") ||
       label(s).toLowerCase() === w ||
-      s.refs.some((r) => r.source === "own" && r.label.toLowerCase() === w) ||
+      s.refs.some((r) => r.source === "own" && (r.label.toLowerCase() === w || r.label.toLowerCase().endsWith(`#${w.replace(/^#/, "")}`))) ||
       s.project.toLowerCase() === w ||
       (s.customTitle ?? "").toLowerCase().includes(w) ||
       (s.branch ?? "").toLowerCase().includes(w),
@@ -247,6 +248,114 @@ async function operator(args) {
   process.exit(r.status ?? 1);
 }
 
+// The hooks the deck needs. PermissionRequest waits for your answer for up to an hour, so its
+// timeout sits just above the hook's own (OPERATOR_TIMEOUT_MS plus one poll).
+const HOOK_EVENTS = { PermissionRequest: 3660, Notification: 5, Stop: 5, UserPromptSubmit: 5, SessionEnd: 5 };
+
+function ghScopes() {
+  const r = spawnSync("gh", ["auth", "status", "-h", "github.com"], { encoding: "utf8" });
+  if (r.error || r.status !== 0) return null;
+  // Older gh prints the status on stderr, newer on stdout.
+  const line = `${r.stdout}${r.stderr}`.match(/Token scopes:\s*(.*)/)?.[1] ?? "";
+  return line.split(",").map((s) => s.trim().replace(/^'|'$/g, ""));
+}
+
+// Issues show their GitHub Project Status only with the read:project scope. When it's missing
+// and this is a real terminal, runs the refresh (a code to paste in the browser) right here.
+// True once the scope is there.
+function projectScope(dry) {
+  const scopes = ghScopes();
+  if (!scopes) {
+    console.log("gh isn't logged in to github.com, so no PRs or issues until you run gh auth login");
+    return false;
+  }
+  if (scopes.includes("read:project") || scopes.includes("project")) return true;
+  if (dry || !process.stdin.isTTY) {
+    console.log(`${dry ? "would ask for" : "gh is missing"} the read:project scope, for GitHub Project status on issues`);
+    return false;
+  }
+  console.log("gh needs the read:project scope for GitHub Project status on issues:");
+  spawnSync("gh", ["auth", "refresh", "-h", "github.com", "-s", "read:project"], { stdio: "inherit" });
+  return ghScopes()?.includes("read:project") ?? false;
+}
+
+// Merges the hooks into ~/.claude/settings.json next to whatever's already there, pointing at
+// the main checkout (never a worktree, which goes away when its branch is done). An old
+// operator-hook path is updated in place, never duplicated. Then links sop into ~/.local/bin.
+// Safe to run again.
+function setup(args) {
+  const dry = args.includes("--dry-run");
+  const here = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  let repo = here;
+  try {
+    repo = dirname(execFileSync("git", ["-C", here, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" }).trim());
+  } catch {}
+  if (repo !== here) console.log(`this is a worktree, so the hooks point at the main checkout: ${repo}`);
+  const hookPath = join(repo, "bin", "operator-hook");
+  if (!existsSync(hookPath)) die(`${hookPath} isn't there - update the main checkout first`);
+  // Claude Code runs the command through a shell, so a path with spaces needs quotes.
+  const hook = /^[\w./-]+$/.test(hookPath) ? hookPath : `'${hookPath.replaceAll("'", `'\\''`)}'`;
+  const settingsPath = join(homedir(), ".claude", "settings.json");
+  const changes = [];
+
+  let settings = {};
+  if (existsSync(settingsPath)) {
+    try {
+      settings = JSON.parse(readFileSync(settingsPath, "utf8"));
+    } catch {
+      die(`${settingsPath} isn't valid JSON - fix it first, setup won't overwrite it`);
+    }
+  }
+  settings.hooks ??= {};
+  for (const [event, timeout] of Object.entries(HOOK_EVENTS)) {
+    const groups = (settings.hooks[event] ??= []);
+    const ours = groups.flatMap((g) => g.hooks ?? []).find((h) => typeof h.command === "string" && h.command.includes("operator-hook"));
+    if (!ours) {
+      groups.push({ hooks: [{ type: "command", command: hook, timeout }] });
+      changes.push(`add ${event} hook`);
+    } else if (ours.command.replace(/^\$HOME|^~/, homedir()) !== hook || ours.timeout !== timeout) {
+      changes.push(`update ${event} hook (${ours.command}, ${ours.timeout ?? "no"} timeout -> ${hook}, ${timeout})`);
+      ours.command = hook;
+      ours.timeout = timeout;
+    }
+  }
+  let backup = null;
+  if (changes.length > 0 && !dry) {
+    mkdirSync(dirname(settingsPath), { recursive: true });
+    if (existsSync(settingsPath)) copyFileSync(settingsPath, (backup = `${settingsPath}.bak-${Date.now()}`));
+    writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
+  }
+
+  const bin = join(homedir(), ".local", "bin");
+  const link = join(bin, "sop");
+  const target = join(repo, "bin", "sop");
+  let current = null;
+  try {
+    current = lstatSync(link).isSymbolicLink() ? readlinkSync(link) : "a file";
+  } catch {}
+  if (current === "a file") {
+    console.log(`left ${link} alone: it's a real file, not a link`);
+  } else if (current !== target) {
+    changes.push(`link ${link} -> ${target}`);
+    if (!dry) {
+      mkdirSync(bin, { recursive: true });
+      if (current) unlinkSync(link);
+      symlinkSync(target, link);
+    }
+  }
+
+  console.log(changes.length === 0 ? "already set up" : `${dry ? "would " : ""}${changes.join("\n" + (dry ? "would " : ""))}`);
+  if (backup) console.log(`(old settings backed up to ${backup})`);
+  const projects = projectScope(dry);
+  console.log(`
+then:
+  cd ${repo} && pnpm install && pnpm build && pnpm start     the deck, at ${BASE}${projects ? "" : `
+  gh auth refresh -h github.com -s read:project                GitHub Project status on issues`}
+  export OPERATOR_TERMINAL=tmux                                 if sop start should use tmux
+  export SHORTCUT_API_TOKEN=...                                 only if you use Shortcut
+Sessions already open pick up the hooks once they're restarted.`);
+}
+
 const [cmd, ...args] = process.argv.slice(2);
 const commands = {
   operator: () => operator(args),
@@ -257,6 +366,7 @@ const commands = {
   pause: () => (args[0] ? pause(args[0], args.slice(1)) : die("sop pause <who> [until]")),
   unpause: () => (args[0] ? unpause(args[0]) : die("sop unpause <who>")),
   start: () => start(args),
+  setup: () => setup(args),
 };
 if (!commands[cmd]) {
   console.log(USAGE);
