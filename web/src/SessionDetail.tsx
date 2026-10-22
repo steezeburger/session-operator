@@ -147,7 +147,18 @@ const FEED_PAGE = 40;
 
 // `decisions`: the session's pending approvals and questions, rendered by the deck so they
 // can be answered here too. While there are any, they take the reply box's place.
-export function SessionDetail({ session, onClose, decisions = [] }: { session: Session; onClose: () => void; decisions?: ReactNode[] }) {
+export function SessionDetail({
+  session,
+  onClose,
+  decisions = [],
+  autoFocus = true,
+}: {
+  session: Session;
+  onClose: () => void;
+  decisions?: ReactNode[];
+  /** Off when opened by key: the cursor stays out of the reply box, so j/k and the pick keys work. */
+  autoFocus?: boolean;
+}) {
   const [feed, setFeed] = useState<FeedItem[] | null>(null);
   const [total, setTotal] = useState(0);
   const [limit, setLimit] = useState(FEED_PAGE);
@@ -316,7 +327,8 @@ export function SessionDetail({ session, onClose, decisions = [] }: { session: S
   };
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    // Escape in the reply box only leaves it (keys.tsx marks that one handled).
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && !e.defaultPrevented && onClose();
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
@@ -324,6 +336,7 @@ export function SessionDetail({ session, onClose, decisions = [] }: { session: S
   return (
     <div className="fixed inset-0 z-40 flex justify-end bg-black/60" onClick={() => !resizing.current && onClose()}>
       <aside
+        data-panel
         className="glow relative flex h-full w-full flex-col border-l border-code-dim bg-black md:w-[var(--panel-w)]"
         style={{ "--panel-w": `${width}px` } as CSSProperties}
         onClick={(e) => {
@@ -451,7 +464,20 @@ export function SessionDetail({ session, onClose, decisions = [] }: { session: S
           {decisions.length > 0 ? (
             <div className="max-h-[60vh] space-y-2 overflow-y-auto">{decisions}</div>
           ) : session.live ? (
-            <ReplyBox sessionId={session.id} says={session.nextSays} autoFocus images={images} onSent={jumpToBottom} />
+            // Tagged while you're typing in it, so it's clear whether keys go to the box or the deck.
+            <div className="group relative [&_textarea::placeholder]:text-code-dim">
+              <span className="absolute -top-2 right-1 z-10 hidden bg-black px-1 text-[10px] font-bold uppercase tracking-widest group-focus-within:block">
+                -- insert --
+              </span>
+              <ReplyBox
+                sessionId={session.id}
+                says={session.nextSays}
+                autoFocus={autoFocus}
+                images={images}
+                onSent={jumpToBottom}
+                placeholder="enter or i to reply (shift+enter for a new line, drop or paste images)"
+              />
+            </div>
           ) : (
             <p className="text-xs text-code-dim">not running - can't reply from here</p>
           )}
