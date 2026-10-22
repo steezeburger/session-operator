@@ -314,24 +314,31 @@ export async function mergedInto(cwd: string, branch: string | null, onReady: ()
 }
 
 // The branch's PR, looked up by head ref, and the issues it says it closes ("Closes #123"),
-// which may live in another repo.
+// which may live in another repo. GraphQL rather than `gh pr list --json`, which older gh
+// versions can't give closingIssuesReferences.
 interface BranchPr {
   pr: string;
   closes: string[];
 }
 
 async function loadBranchPr(repo: string, branch: string): Promise<BranchPr | null> {
+  const [owner, name] = repo.split("/");
   const { stdout } = await run(
     "gh",
-    ["pr", "list", "-R", repo, "--head", branch, "--state", "all", "--limit", "1", "--json", "number,closingIssuesReferences"],
+    [
+      "api", "graphql",
+      "-f", "query=query($o:String!,$r:String!,$b:String!){repository(owner:$o,name:$r){pullRequests(headRefName:$b,first:1,orderBy:{field:CREATED_AT,direction:DESC}){nodes{number closingIssuesReferences(first:20){nodes{number repository{name owner{login}}}}}}}}",
+      "-f", `o=${owner}`, "-f", `r=${name}`, "-f", `b=${branch}`,
+    ],
     { timeout: 15_000 },
   );
   type Closing = { number: number; repository?: { name: string; owner: { login: string } } };
-  const [p] = JSON.parse(stdout) as { number: number; closingIssuesReferences?: Closing[] }[];
+  type Pr = { number: number; closingIssuesReferences?: { nodes?: Closing[] } };
+  const [p] = (JSON.parse(stdout) as { data?: { repository?: { pullRequests?: { nodes?: Pr[] } } } }).data?.repository?.pullRequests?.nodes ?? [];
   if (!p) return null;
   return {
     pr: `${repo}#${p.number}`.toLowerCase(),
-    closes: (p.closingIssuesReferences ?? []).map((x) =>
+    closes: (p.closingIssuesReferences?.nodes ?? []).map((x) =>
       (x.repository ? `${x.repository.owner.login}/${x.repository.name}#${x.number}` : `${repo}#${x.number}`).toLowerCase(),
     ),
   };
