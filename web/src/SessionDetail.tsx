@@ -1,8 +1,10 @@
 import { type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { CleanupItem, CleanupResult, FeedItem, Session } from "../../server/types.ts";
+import { PauseMenu, unpauseSession, untilLabel } from "./Pause.tsx";
 import { WithPaths } from "./Paths.tsx";
 import { closedOutcome, focusRefs, RefList, sessionName } from "./Refs.tsx";
 import { imageFiles, ReplyBox } from "./ReplyBox.tsx";
+import { TermButton } from "./TermButton.tsx";
 
 // Three voices, all Matrix: you in white on a faint panel, Claude in full glowing green on
 // black, and its tool calls folded into dark-green log blocks with the tool names inverted.
@@ -10,6 +12,8 @@ const KIND_STYLE: Record<FeedItem["kind"], { label: string; cls: string; labelCl
   user: { label: "you", cls: "border-white bg-white/5 py-1 text-white [text-shadow:none]", labelCls: "text-white/50" },
   assistant: { label: "claude", cls: "border-code text-code [text-shadow:0_0_6px_rgb(0_255_65/0.6)]", labelCls: "text-code-dim" },
   tool: { label: "tool", cls: "border-tool text-xs text-code-dim [text-shadow:none]", labelCls: "text-tool-dim" },
+  skill: { label: "skill", cls: "border-tool text-xs text-code-dim [text-shadow:none]", labelCls: "text-tool-dim" },
+  agent: { label: "agent", cls: "border-tool text-xs text-code-dim [text-shadow:none]", labelCls: "text-tool-dim" },
   error: { label: "error", cls: "border-fail text-fail [text-shadow:0_0_4px_rgb(255_42_42/0.6)]", labelCls: "text-fail/70" },
 };
 
@@ -59,6 +63,34 @@ function ToolBlock({ items }: { items: FeedItem[] }) {
             </span>
           ))}
         </button>
+      )}
+    </div>
+  );
+}
+
+// The markdown a skill loads into the turn, or a subagent's report: one line with its name
+// (and how the report starts) until clicked open.
+function FoldBlock({ item, session }: { item: FeedItem; session: Session }) {
+  const [open, setOpen] = useState(false);
+  const k = KIND_STYLE[item.kind];
+  const start = item.kind === "agent" ? item.body?.split("\n").find((l) => l.trim()) : undefined;
+  return (
+    <div className={`border-l-2 bg-code-dark/40 px-2 py-1 ${k.cls}`}>
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="flex w-full items-center gap-2 text-left hover:text-code"
+        title={time(item.at)}
+      >
+        <span className="bg-tool px-1 text-[10px] font-bold uppercase tracking-wider text-black">{k.label}</span>
+        <span className={start ? "shrink-0" : "truncate"}>{item.text}</span>
+        {start && !open && <span className="truncate opacity-70">{start}</span>}
+        <span className="ml-auto shrink-0 text-[10px] uppercase tracking-wider">{open ? "fold" : "show"}</span>
+      </button>
+      {open && item.body && (
+        <div className="mt-1 whitespace-pre-wrap break-words">
+          <Linkified text={item.body} session={session} />
+        </div>
       )}
     </div>
   );
@@ -129,6 +161,60 @@ export function SessionDetail({ session, onClose, decisions = [] }: { session: S
   const following = useRef(true);
   const [seen, setSeen] = useState<FeedItem | null>(null);
   const focus = focusRefs(session);
+
+  // Whether the buttons would squeeze the title, judged by the title text's own width and the
+  // buttons' width inline (stacked, they stretch), so moving them doesn't change the answer.
+  const titleRow = useRef<HTMLDivElement>(null);
+  const titleText = useRef<HTMLSpanElement>(null);
+  const buttonsBox = useRef<HTMLDivElement>(null);
+  const inlineWidth = useRef(0);
+  const [stacked, setStacked] = useState(false);
+  useLayoutEffect(() => {
+    const measure = () => {
+      const row = titleRow.current;
+      const text = titleText.current;
+      const box = buttonsBox.current;
+      if (!row || !text || !box) return;
+      if (!stacked) inlineWidth.current = box.offsetWidth;
+      setStacked(text.offsetWidth + 8 + inlineWidth.current > row.clientWidth);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    for (const el of [titleRow.current, buttonsBox.current]) if (el) observer.observe(el);
+    return () => observer.disconnect();
+  });
+
+  // Stacked, the buttons are a tab bar: equal parts of the full width, split by thin lines.
+  const tab = stacked ? "flex-1 border-l border-code-dark py-1.5 text-xs uppercase first:border-l-0 hover:bg-code-dark/60" : null;
+  const buttons = (
+    <div ref={buttonsBox} className={stacked ? "relative flex" : "relative flex shrink-0 gap-1"}>
+      {session.role !== "operator" &&
+        (session.paused ? (
+          <button
+            type="button"
+            onClick={() => void unpauseSession(session.id)}
+            title={`Paused ${untilLabel(session)}. Back to its group, nudges and notifications on`}
+            className={tab ?? "border border-code px-2 text-xs uppercase hover:bg-code hover:text-black hover:[text-shadow:none]"}
+          >
+            unpause
+          </button>
+        ) : (
+          session.status !== "closed" && (
+            <PauseMenu
+              ids={[session.id]}
+              className={tab ? "flex-1 border-l border-code-dark first:border-l-0" : ""}
+              buttonClass={tab ? "w-full py-1.5 text-xs uppercase hover:bg-code-dark/60" : undefined}
+            />
+          )
+        ))}
+      <TermButton s={session} className={tab ?? undefined} />
+      {session.live && <EndSessionButton sessionId={session.id} onEnded={onClose} className={tab ?? undefined} />}
+      <button type="button" onClick={onClose} className={tab ?? "border border-code-dim px-2 text-xs uppercase hover:border-code"}>
+        esc
+      </button>
+    </div>
+  );
+
   const [width, setWidth] = useState(savedWidth);
   const resizing = useRef(false);
   // Images dropped anywhere on the panel wait in the reply box.
@@ -276,41 +362,40 @@ export function SessionDetail({ session, onClose, decisions = [] }: { session: S
           onPointerDown={startResize}
           className="absolute inset-y-0 -left-1 z-10 hidden w-2 cursor-col-resize hover:bg-code/40 md:block"
         />
-        <header className="relative flex items-start justify-between gap-2 border-b border-code-dim p-2">
-          <div className="min-w-0 text-xs">
-            <div className="truncate text-sm font-bold">
-              {session.project}
-              {session.branch && <span className="font-normal text-code-dim"> {session.branch}</span>}
+        <header className="@container border-b border-code-dim">
+          {/* The buttons sit top right of the title, or get their own bar across the top
+              when they'd squeeze the branch name. */}
+          {stacked && <div className="border-b border-code-dim">{buttons}</div>}
+          <div className="space-y-1 p-2">
+            <div ref={titleRow} className="flex items-start gap-2">
+              <div className="min-w-0 flex-1 truncate text-sm font-bold">
+                <span ref={titleText}>
+                  {session.project}
+                  {session.branch && <span className="font-normal text-code-dim"> {session.branch}</span>}
+                </span>
+              </div>
+              {!stacked && buttons}
             </div>
-            {sessionName(session) && <div className="truncate">{sessionName(session)}</div>}
-            {session.topic && <div className="truncate text-code-dim">now: {session.topic}</div>}
-            <div className="truncate text-code-dark" title="Session id: what sop and the transcript call it">
-              {session.id.slice(0, 8)}
-              {session.customTitle && session.title && session.customTitle !== session.title ? ` · started as "${session.title}"` : ""}
-            </div>
-            <RefList refs={focus.own} className="my-1" />
-            {focus.mentioned.length > 0 && (
-              <details className="my-1 text-code-dim">
-                <summary className="cursor-pointer">
-                  mentioned {focus.mentioned.length}
-                </summary>
-                <RefList refs={focus.mentioned} className="mt-1 opacity-70" />
-              </details>
-            )}
-            <div className="truncate text-code-dim">
-              {session.status === "closed" ? closedOutcome(session).text : session.statusDetail} · {session.cwd}
-            </div>
-          </div>
-          <div className="flex shrink-0 flex-col items-end gap-1">
-            <div className="flex gap-1">
-              {session.live && <EndSessionButton sessionId={session.id} onEnded={onClose} />}
-              <button
-                type="button"
-                onClick={onClose}
-                className="border border-code-dim px-2 text-xs uppercase hover:border-code"
-              >
-                esc
-              </button>
+            <div className="min-w-0 text-xs">
+              {sessionName(session) && <div className="truncate">{sessionName(session)}</div>}
+              {session.topic && <div className="truncate text-code-dim">now: {session.topic}</div>}
+              <div className="truncate text-code-dark" title="Session id: what sop and the transcript call it">
+                {session.id.slice(0, 8)}
+                {session.customTitle && session.title && session.customTitle !== session.title ? ` · started as "${session.title}"` : ""}
+              </div>
+              <RefList refs={focus.own} className="my-1" />
+              {focus.mentioned.length > 0 && (
+                <details className="my-1 text-code-dim">
+                  <summary className="cursor-pointer">
+                    mentioned {focus.mentioned.length}
+                  </summary>
+                  <RefList refs={focus.mentioned} className="mt-1 opacity-70" />
+                </details>
+              )}
+              <div className="truncate text-code-dim">
+                {session.paused && <span className="text-white">paused {untilLabel(session)} · </span>}
+                {session.status === "closed" ? closedOutcome(session).text : session.statusDetail} · {session.cwd}
+              </div>
             </div>
           </div>
         </header>
@@ -331,6 +416,7 @@ export function SessionDetail({ session, onClose, decisions = [] }: { session: S
             {feed && feedRows(feed).map((row, n) => {
               if (row.kind === "tools") return <ToolBlock key={`tools-${row.items[0]?.at}-${row.items[0]?.text}`} items={row.items} />;
               const { item, i } = row;
+              if (item.kind === "skill" || item.kind === "agent") return <FoldBlock key={`${item.at}-${i}`} item={item} session={session} />;
               const k = KIND_STYLE[item.kind];
               // Each of your messages starts a turn: a rule and room above it, so the chat
               // reads in chunks and your own words are the landmarks when scrolling back.
@@ -377,7 +463,7 @@ export function SessionDetail({ session, onClose, decisions = [] }: { session: S
 
 // Exits Claude and closes its iTerm tab or tmux pane. Ending asks first what to clean up: servers it left running, its worktree and branch,
 // its scratch folder. The server exits the session, then does only what's ticked.
-function EndSessionButton({ sessionId, onEnded }: { sessionId: string; onEnded: () => void }) {
+function EndSessionButton({ sessionId, onEnded, className }: { sessionId: string; onEnded: () => void; className?: string }) {
   const [items, setItems] = useState<CleanupItem[] | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [open, setOpen] = useState(false);
@@ -437,12 +523,16 @@ function EndSessionButton({ sessionId, onEnded }: { sessionId: string; onEnded: 
         disabled={busy}
         onClick={() => (open ? setOpen(false) : void openChecklist())}
         title="Exit Claude, close its tab or pane, and clean up what it left"
-        className={`border px-2 text-xs uppercase ${open ? "border-fail bg-fail font-bold text-black [text-shadow:none]" : "border-code-dim text-fail hover:border-fail"}`}
+        className={
+          className
+            ? `${className} ${open ? "bg-fail font-bold text-black [text-shadow:none]" : "text-fail"}`
+            : `border px-2 text-xs uppercase ${open ? "border-fail bg-fail font-bold text-black [text-shadow:none]" : "border-code-dim text-fail hover:border-fail"}`
+        }
       >
         end session
       </button>
       {open && (
-        <div className="absolute right-2 top-10 z-30 w-[min(32rem,calc(100%-1rem))] border border-fail bg-black p-2 text-left text-xs shadow-lg">
+        <div className="absolute right-0 top-full z-30 mt-1 w-[min(32rem,100cqw)] border border-fail bg-black p-2 text-left text-xs shadow-lg">
           {failed.length > 0 ? (
             <>
               <p className="font-bold uppercase text-fail">Ended, but some cleanup didn't happen</p>

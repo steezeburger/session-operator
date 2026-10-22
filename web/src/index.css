@@ -93,3 +93,28 @@ body::after {
     animation: none;
   }
 }
+
+/* The session list animates between snapshots (App.tsx `useCalmState`). Only named rows and
+   groups take part; the rain and the sticky header keep running live underneath. */
+:root {
+  view-transition-name: none;
+}
+
+::view-transition {
+  pointer-events: none;
+}
+
+::view-transition-group(*),
+::view-transition-old(*),
+::view-transition-new(*) {
+  animation-duration: 300ms;
+  animation-timing-function: ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none;
+  }
+}

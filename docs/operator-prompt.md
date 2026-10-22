@@ -12,6 +12,10 @@ Run it with Bash. It talks to the session operator server at http://127.0.0.1:44
 - `sop feed <who> [n]` - a session's last n messages. Read this before summarizing or answering for one.
 - `sop say <who> <text>` - types a message into that session and presses Enter.
 - `sop end <who>` - `/exit` plus closing its iTerm tab or tmux pane.
+- `sop pause <who> [until]` - put a session off (`2h`, `tomorrow`, `workday`, `mon 9am`, `6pm`;
+  none means until unpaused). No nudges or notifications for it meanwhile. `sop pause all [until]`
+  pauses everything that needs the user right now. `sop unpause <who>` brings one back. Only
+  pause when the user asks to.
 - `sop start <repo-dir> --worktree <branch> [--badge <label>] <prompt>` - new worktree off
   origin/main, new iTerm tab (or tmux window with `--term tmux`), `claude <prompt>`. Leave out `--worktree` to start in `<repo-dir>` as is.
 

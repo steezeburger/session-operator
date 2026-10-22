@@ -6,6 +6,11 @@ export interface Session {
   id: string;
   cwd: string;
   project: string;
+  /**
+   * The repo the folder belongs to, named after its main checkout, so a worktree reads the same
+   * wherever it lives (repo/.worktrees/x, repo/.claude/worktrees/x, a sibling repo-x). Null outside git.
+   */
+  repo: string | null;
   branch: string | null;
   /** Claude Code's AI title for the session. Set once near the start, never updated. */
   title: string | null;
@@ -24,10 +29,14 @@ export interface Session {
   nextUrl: string | null;
   /** Exact replies Claude offered the user to type back, in the order it offered them. */
   nextSays: string[];
+  /** Roughly how long the user needs to understand and decide the ask. Null until estimated. */
+  effort: Effort | null;
   /** True while the next action is still being worked out. */
   nextLoading: boolean;
   /** A Claude process for this session is running, so the operator can type a reply into it. */
   live: boolean;
+  /** Where its live Claude runs: a tmux pane, else a tty taken to be iTerm. Null when not live or no tty. */
+  terminal: "iterm" | "tmux" | null;
   /** What the session is waiting on outside the user (CI, a deploy, a review), when status is "blocked". */
   blockedOn: string | null;
   /** Cards, issues and PRs this session is about or named, with their titles. */
@@ -42,7 +51,24 @@ export interface Session {
   role: "operator" | null;
   /** How the transcript's last turn ended, whatever the status says now. Null for hook-only sessions. */
   turnEnd: "finished" | "mid-turn" | "failing" | null;
+  /** Set while you've put it off: no nudges, no notifications, listed under Paused. */
+  paused: Pause | null;
+  /** When the transcript began. Null for hook-only sessions. */
+  startedAt: string | null;
   lastActivity: string;
+}
+
+/** Time to deal with an ask: reading, weighing and deciding, not the click. */
+export interface Effort {
+  minutes: number;
+  /** A few words on what takes the time, e.g. "weigh 3 options", "review 400-line diff". */
+  why: string;
+}
+
+export interface Pause {
+  /** When it comes back on its own. Null: when you unpause it. */
+  until: string | null;
+  since: string;
 }
 
 export interface Ref {
@@ -75,6 +101,8 @@ export interface PendingDecision {
   detail: string | null;
   /** Claude Code's suggested rules for "Yes, and don't ask again", sent back as-is on allow. */
   suggestions: PermissionUpdate[];
+  /** Null until the model has looked at it. */
+  effort: Effort | null;
   createdAt: string;
   expiresAt: string;
 }
@@ -97,8 +125,13 @@ export interface OperatorState {
 export type Behavior = "allow" | "deny";
 
 export interface FeedItem {
-  kind: "user" | "assistant" | "tool" | "error";
+  kind: "user" | "assistant" | "tool" | "error" | "skill" | "agent";
+  /**
+   * For a skill, its name (and the args Claude passed it), with the markdown it loaded in `body`.
+   * For an agent, who sent it, with what they said in `body`.
+   */
   text: string;
+  body?: string;
   at: string | null;
 }
 

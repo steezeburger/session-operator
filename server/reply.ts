@@ -52,6 +52,45 @@ on run argv
   return "missing"
 end run`;
 
+// Brings the iTerm session on that tty to the front: its tab, its window, then iTerm itself.
+const FOCUS_ITERM_SESSION = `
+on run argv
+  set ttyName to "/dev/" & item 1 of argv
+  tell application "iTerm2"
+    repeat with w in windows
+      repeat with t in tabs of w
+        repeat with s in sessions of t
+          if tty of s is ttyName then
+            tell s to select
+            tell t to select
+            tell w to select
+            activate
+            return "ok"
+          end if
+        end repeat
+      end repeat
+    end repeat
+  end tell
+  return "missing"
+end run`;
+
+// A new iTerm tab (or window, when there's none) attached to that tmux session. exec, so
+// detaching closes the tab instead of leaving a shell behind.
+const ATTACH_IN_ITERM = `
+on run argv
+  set cmd to "exec tmux attach -t " & quoted form of ("=" & item 1 of argv)
+  tell application "iTerm2"
+    if (count of windows) is 0 then
+      set w to (create window with default profile)
+    else
+      set w to current window
+      tell w to create tab with default profile
+    end if
+    tell current session of w to write text cmd
+    activate
+  end tell
+end run`;
+
 /** Session id -> pid for every Claude Code process that's still registered. */
 export async function liveSessions(): Promise<Map<string, number>> {
   const live = new Map<string, number>();
@@ -81,21 +120,45 @@ export type ReplyResult = "sent" | "not-running" | "no-terminal";
 // can't find it anyway.
 type Terminal = { kind: "tmux"; pane: string } | { kind: "iterm"; tty: string };
 
-async function ttyOf(pid: number): Promise<string | null> {
-  const tty = (await run("ps", ["-o", "tty=", "-p", String(pid)])).stdout.trim();
-  return /^ttys\d+$/.test(tty) ? tty : null;
+/** pid -> tty (ttys012) for each of those processes that has one. One ps for all of them. */
+async function ttysOf(pids: number[]): Promise<Map<number, string>> {
+  const ttys = new Map<number, string>();
+  if (pids.length === 0) return ttys;
+  // ps exits 1 when some pid is gone, with the rest still printed.
+  const { stdout } = await run("ps", ["-o", "pid=,tty=", "-p", pids.join(",")]).catch((err) => ({ stdout: String(err.stdout ?? "") }));
+  for (const line of stdout.split("\n")) {
+    const [pid, tty] = line.trim().split(/\s+/);
+    if (tty && /^ttys\d+$/.test(tty)) ttys.set(Number(pid), tty);
+  }
+  return ttys;
+}
+
+/** /dev tty -> tmux pane id, for every pane. Empty when no tmux server is running. */
+async function tmuxPanes(): Promise<Map<string, string>> {
+  const panes = new Map<string, string>();
+  const { stdout } = await run("tmux", ["list-panes", "-a", "-F", "#{pane_tty} #{pane_id}"]).catch(() => ({ stdout: "" }));
+  for (const line of stdout.split("\n")) {
+    const [paneTty, pane] = line.split(" ");
+    if (paneTty && pane) panes.set(paneTty, pane);
+  }
+  return panes;
+}
+
+function terminalFor(tty: string, panes: Map<string, string>): Terminal {
+  const pane = panes.get(`/dev/${tty}`);
+  return pane ? { kind: "tmux", pane } : { kind: "iterm", tty };
 }
 
 async function terminalOf(pid: number): Promise<Terminal | null> {
-  const tty = await ttyOf(pid);
-  if (!tty) return null;
-  // Fails when no tmux server is running, which just means it's not in tmux.
-  const panes = await run("tmux", ["list-panes", "-a", "-F", "#{pane_tty} #{pane_id}"]).catch(() => ({ stdout: "" }));
-  for (const line of panes.stdout.split("\n")) {
-    const [paneTty, pane] = line.split(" ");
-    if (paneTty === `/dev/${tty}` && pane) return { kind: "tmux", pane };
-  }
-  return { kind: "iterm", tty };
+  const tty = (await ttysOf([pid])).get(pid);
+  return tty ? terminalFor(tty, await tmuxPanes()) : null;
+}
+
+// Which terminal each live process is in, for the dashboard. Any tty outside tmux counts as
+// iTerm without asking iTerm, which is slow; focusing one that isn't there says so then.
+export async function terminalKinds(pids: number[]): Promise<Map<number, Terminal["kind"]>> {
+  const [ttys, panes] = await Promise.all([ttysOf(pids), tmuxPanes()]);
+  return new Map([...ttys].map(([pid, tty]) => [pid, terminalFor(tty, panes).kind]));
 }
 
 // Pastes the text into the pane (bracketed, so newlines stay newlines, like iTerm), then
@@ -158,4 +221,43 @@ export async function closeSession(sessionId: string): Promise<CloseResult> {
   // directly (sop start) is already gone by now, which is fine.
   else await run("tmux", ["kill-pane", "-t", term.pane]).catch(() => {});
   return "closed";
+}
+
+export type FocusResult = "focused" | "not-running" | "no-terminal";
+
+async function focusIterm(tty: string): Promise<boolean> {
+  const { stdout } = await run("osascript", ["-e", FOCUS_ITERM_SESSION, tty], { timeout: 10_000 });
+  return stdout.trim() === "ok";
+}
+
+// Selects the pane and its window, then shows the tmux session: in the iTerm tab of the client
+// you used last, or in a new iTerm tab when no client is attached (or it isn't in iTerm).
+async function focusTmux(pane: string): Promise<boolean> {
+  let name: string;
+  try {
+    name = (await run("tmux", ["display-message", "-p", "-t", pane, "#{session_name}"])).stdout.trim();
+    await run("tmux", ["select-window", "-t", pane]);
+    await run("tmux", ["select-pane", "-t", pane]);
+  } catch (err) {
+    if (/can't find pane/.test(String((err as { stderr?: string }).stderr))) return false;
+    throw err;
+  }
+  const clients = (await run("tmux", ["list-clients", "-t", `=${name}`, "-F", "#{client_activity} #{client_tty}"])).stdout
+    .split("\n")
+    .map((line) => line.split(" "))
+    .filter(([at, tty]) => at && tty?.startsWith("/dev/"))
+    .sort((a, b) => Number(b[0]) - Number(a[0]));
+  const client = clients[0]?.[1];
+  if (client && (await focusIterm(client.slice("/dev/".length)))) return true;
+  await run("osascript", ["-e", ATTACH_IN_ITERM, name], { timeout: 10_000 });
+  return true;
+}
+
+export async function focusSession(sessionId: string): Promise<FocusResult> {
+  const pid = (await liveSessions()).get(sessionId);
+  if (!pid) return "not-running";
+  const term = await terminalOf(pid);
+  if (!term) return "no-terminal";
+  const ok = term.kind === "tmux" ? await focusTmux(term.pane) : await focusIterm(term.tty);
+  return ok ? "focused" : "no-terminal";
 }

@@ -4,7 +4,7 @@ import { basename, join } from "node:path";
 import { countMentions } from "./refs.ts";
 import type { FeedItem, Session, SessionStatus } from "./types.ts";
 
-const PROJECTS_DIR = join(homedir(), ".claude", "projects");
+export const PROJECTS_DIR = join(homedir(), ".claude", "projects");
 const LOOKBACK_MS = 24 * 60 * 60 * 1000;
 const TAIL_BYTES = 256 * 1024;
 const STALE_WORKING_MS = 10 * 60 * 1000;
@@ -22,6 +22,11 @@ interface TranscriptRecord {
   customTitle?: string;
   lastPrompt?: string;
   isApiErrorMessage?: boolean;
+  isMeta?: boolean;
+  uuid?: string;
+  parentUuid?: string | null;
+  sourceToolUseID?: string;
+  origin?: { kind?: string; name?: string };
   message?: { stop_reason?: string | null; content?: unknown };
   attachment?: { type?: string; prompt?: unknown; origin?: { kind?: string } };
 }
@@ -58,7 +63,13 @@ function clip(text: string | undefined, max = 160): string | null {
 function clipTail(text: string | undefined, max = 280): string | null {
   if (!text) return null;
   const oneLine = text.replace(/\s+/g, " ").trim();
-  return oneLine.length > max ? `…${oneLine.slice(-(max - 1))}` : oneLine;
+  if (oneLine.length <= max) return oneLine;
+  // Start at a sentence, or at least a word, so it doesn't open mid-word.
+  const cut = oneLine.slice(-(max - 1));
+  const sentence = cut.search(/[.!?:]\s+\S/);
+  if (sentence >= 0 && sentence < max / 2) return `…${cut.slice(sentence + 1).replace(/^[\s>#*-]+/, "")}`;
+  const word = cut.indexOf(" ");
+  return `…${word >= 0 && word < 30 ? cut.slice(word + 1) : cut}`;
 }
 
 function assistantText(r: TranscriptRecord): string | undefined {
@@ -97,7 +108,8 @@ function typedPrompt(r: TranscriptRecord): string | null {
   const a = r.attachment;
   if (r.type === "attachment" && a?.type === "queued_command" && a.origin?.kind === "human" && typeof a.prompt === "string") return a.prompt.trim() || null;
   const content = r.message?.content;
-  if (r.type !== "user" || typeof content !== "string") return null;
+  // isMeta is the harness talking as you: a skill's markdown, image notes, scheduled prompts.
+  if (r.type !== "user" || r.isMeta || typeof content !== "string") return null;
   return content.trimStart().startsWith("<") ? null : content.trim() || null;
 }
 
@@ -106,16 +118,25 @@ const PROMPTS_KEPT = 20;
 // The /rename title and your recent messages, from the whole transcript once and then only
 // what's appended. Both can sit far before the tail parseTranscript sees: in a long session
 // tool output fills that, and a rename happens whenever.
-const histories = new Map<string, { offset: number; title: string | null; prompts: string[] }>();
-async function history(path: string, size: number): Promise<{ title: string | null; prompts: string[] }> {
+interface History {
+  offset: number;
+  title: string | null;
+  prompts: string[];
+  /** The first record's time, so when the session started. */
+  startedAt: string | null;
+}
+const histories = new Map<string, History>();
+async function history(path: string, size: number): Promise<History> {
   let h = histories.get(path);
-  if (!h || size < h.offset) h = { offset: 0, title: null, prompts: [] };
+  if (!h || size < h.offset) h = { offset: 0, title: null, prompts: [], startedAt: null };
   if (size > h.offset) {
     const text = await readFrom(path, h.offset, size);
     const end = text.lastIndexOf("\n") + 1;
     const prompts = [...h.prompts];
     let title = h.title;
+    let startedAt = h.startedAt;
     for (const line of text.slice(0, end).split("\n")) {
+      startedAt ??= line.match(/"timestamp":"([^"]+)"/)?.[1] ?? null;
       // Skip the parse for everything that can't be a rename or something you typed.
       if (!line.includes('"custom-title"') && !line.includes('"queued_command"') && !line.includes('"type":"user"')) continue;
       try {
@@ -127,7 +148,7 @@ async function history(path: string, size: number): Promise<{ title: string | nu
         // half-written line
       }
     }
-    h = { offset: h.offset + Buffer.byteLength(text.slice(0, end)), title, prompts: prompts.slice(-PROMPTS_KEPT) };
+    h = { offset: h.offset + Buffer.byteLength(text.slice(0, end)), title, prompts: prompts.slice(-PROMPTS_KEPT), startedAt };
   }
   histories.set(path, h);
   return h;
@@ -208,6 +229,7 @@ export function parseTranscript(id: string, text: string, mtime: Date): Session 
     id,
     cwd,
     project: basename(cwd),
+    repo: null,
     branch: branch ?? null,
     title: clip(title, 80),
     customTitle: clip(customTitle, 80),
@@ -218,8 +240,10 @@ export function parseTranscript(id: string, text: string, mtime: Date): Session 
     nextAction: extractNextAction(lastReply),
     nextUrl: null,
     nextSays: [],
+    effort: null,
     nextLoading: false,
     live: false,
+    terminal: null,
     blockedOn: null,
     refs: [],
     trackers: { repo: null, shortcutSlug: null },
@@ -228,6 +252,8 @@ export function parseTranscript(id: string, text: string, mtime: Date): Session 
     statusDetail,
     role: null,
     turnEnd: apiError || (lastTurn.type === "user" && hasToolError(lastTurn)) ? "failing" : turnEnded ? "finished" : "mid-turn",
+    paused: null,
+    startedAt: null,
     lastActivity: lastActivity.toISOString(),
   };
 }
@@ -264,6 +290,7 @@ export async function scanSessions(): Promise<Session[]> {
           const h = await history(path, info.size);
           session.customTitle = clip(h.title ?? undefined, 80) ?? session.customTitle;
           if (h.prompts.length > session.recentPrompts.length) session.recentPrompts = h.prompts;
+          session.startedAt = h.startedAt;
           sessions.push(session);
         }
       } catch {
@@ -275,6 +302,8 @@ export async function scanSessions(): Promise<Session[]> {
 }
 
 const FEED_TEXT_MAX = 4000;
+// A skill's markdown or a subagent's report shows folded, so it can keep far more before losing its middle.
+const FOLDED_BODY_MAX = 20000;
 const SESSION_ID_RE = /^[0-9a-f-]{36}$/;
 
 function toolLine(block: { name?: string; input?: Record<string, unknown> }): string {
@@ -284,10 +313,10 @@ function toolLine(block: { name?: string; input?: Record<string, unknown> }): st
 }
 
 // Long messages lose their middle: the opening says what it's about, the end holds the ask.
-function clipFeed(text: string): string {
-  if (text.length <= FEED_TEXT_MAX) return text;
-  const head = Math.floor(FEED_TEXT_MAX * 0.3);
-  return `${text.slice(0, head)}\n…\n${text.slice(text.length - (FEED_TEXT_MAX - head - 3))}`;
+function clipFeed(text: string, max = FEED_TEXT_MAX): string {
+  if (text.length <= max) return text;
+  const head = Math.floor(max * 0.3);
+  return `${text.slice(0, head)}\n…\n${text.slice(text.length - (max - head - 3))}`;
 }
 
 // One transcript line as feed items. Same rule as the scan: read fields, never act on them.
@@ -303,7 +332,51 @@ function typedCommand(content: string): string | null {
   return args ? `${name} ${args}` : name;
 }
 
-function feedItems(line: string): FeedItem[] {
+// What a transcript said earlier that later lines need: Skill calls by tool_use id, and the
+// slash commands you typed by record uuid, so a skill's markdown can be told apart from you.
+interface FeedContext {
+  skillCalls: Map<string, string>;
+  commands: Map<string, string>;
+}
+
+function recordText(r: TranscriptRecord): string {
+  const content = r.message?.content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return (content as { type?: string; text?: string }[]).filter((b) => b?.type === "text" && b.text).map((b) => b.text).join("\n\n");
+}
+
+// "Another Claude session sent a message:\n<agent-message from=..>\n[Subagent hand-back] ...
+// The report follows:\n  <report, indented>\n</agent-message>" -> the report.
+function agentReport(text: string): string {
+  const lines = text
+    .replace(/^Another Claude session sent a message:\s*/, "")
+    .replace(/^<agent-message[^>]*>\n?/, "")
+    .replace(/\n?<\/agent-message>\s*$/, "")
+    .split("\n");
+  if (lines[0]?.startsWith("[Subagent hand-back]")) lines.shift();
+  const indented = lines.every((l) => !l.trim() || l.startsWith("  "));
+  return (indented ? lines.map((l) => l.slice(2)) : lines).join("\n").trim();
+}
+
+// isMeta user records are the harness talking as you, so none of them show as "you". A skill
+// loading its markdown answers a Skill call or hangs off the slash command you typed; another
+// session's message carries a peer origin. Told by those links, never by the text. Image resize
+// notes ("[Image: original WxH, displayed at ...]") go: they're only for Claude's clicks.
+function metaItems(r: TranscriptRecord, ctx: FeedContext): FeedItem[] | null {
+  if (r.type !== "user" || !r.isMeta) return null;
+  const text = recordText(r).trim();
+  const at = r.timestamp ?? null;
+  const skill = (r.sourceToolUseID && ctx.skillCalls.get(r.sourceToolUseID)) || (r.parentUuid && ctx.commands.get(r.parentUuid));
+  if (skill && text && !text.startsWith("<")) return [{ kind: "skill", text: skill, body: clipFeed(text, FOLDED_BODY_MAX), at }];
+  if (r.origin?.kind === "peer") {
+    return [{ kind: "agent", text: r.origin.name || "subagent", body: clipFeed(agentReport(text), FOLDED_BODY_MAX), at }];
+  }
+  if (text && text.split("\n").every((l) => l.startsWith("[Image: original "))) return [];
+  return null;
+}
+
+function feedItems(line: string, ctx: FeedContext): FeedItem[] {
   let r: TranscriptRecord;
   try {
     r = JSON.parse(line);
@@ -312,6 +385,8 @@ function feedItems(line: string): FeedItem[] {
   }
   if (r.isSidechain) return [];
   const at = r.timestamp ?? null;
+  const meta = metaItems(r, ctx);
+  if (meta) return meta;
   // Messages typed while Claude is mid-turn are stored as queued_command attachments, not user records.
   const a = r.attachment;
   if (r.type === "attachment" && a?.type === "queued_command" && a.origin?.kind === "human" && typeof a.prompt === "string") {
@@ -325,6 +400,8 @@ function feedItems(line: string): FeedItem[] {
     // Harness-injected user records (reminders, command output) start with a tag. Slash and
     // ! commands do too, but those you typed, so they show as you typed them.
     const typed = content.trimStart().startsWith("<") ? typedCommand(content) : content;
+    const command = content.match(/<command-name>\/?([\s\S]*?)<\/command-name>/)?.[1]?.trim();
+    if (command && r.uuid) ctx.commands.set(r.uuid, command);
     return typed ? [{ kind: "user", text: clipFeed(typed), at }] : [];
   }
   if (!Array.isArray(content)) return [];
@@ -334,6 +411,11 @@ function feedItems(line: string): FeedItem[] {
       if (r.type === "user" && b.text.trimStart().startsWith("<")) continue;
       out.push({ kind: r.type === "user" ? "user" : "assistant", text: clipFeed(b.text.trim()), at });
     } else if (b?.type === "tool_use") {
+      const tool = b as { id?: string; name?: string; input?: { skill?: unknown; args?: unknown } };
+      if (tool.name === "Skill" && tool.id && typeof tool.input?.skill === "string") {
+        const args = typeof tool.input.args === "string" ? tool.input.args.trim() : "";
+        ctx.skillCalls.set(tool.id, args ? `${tool.input.skill} ${args}` : tool.input.skill);
+      }
       out.push({ kind: "tool", text: clipFeed(toolLine(b as { name?: string; input?: Record<string, unknown> })), at });
     } else if (b?.type === "tool_result" && b.is_error) {
       const text = typeof b.content === "string" ? b.content : JSON.stringify(b.content);
@@ -345,7 +427,7 @@ function feedItems(line: string): FeedItem[] {
 
 // Whole-transcript feeds, parsed once and then only the bytes appended since. The panel
 // polls every few seconds, and transcripts run to tens of MB.
-const feedCache = new Map<string, { offset: number; items: FeedItem[] }>();
+const feedCache = new Map<string, { offset: number; items: FeedItem[]; ctx: FeedContext }>();
 
 async function readFrom(path: string, from: number, size: number): Promise<string> {
   const handle = await open(path, "r");
@@ -410,14 +492,23 @@ export async function readFeed(id: string): Promise<FeedItem[] | null> {
   if (!found) return null;
   const { path, size } = found;
   let cached = feedCache.get(path);
-  if (!cached || size < cached.offset) cached = { offset: 0, items: [] };
+  if (!cached || size < cached.offset) cached = { offset: 0, items: [], ctx: { skillCalls: new Map(), commands: new Map() } };
   if (size > cached.offset) {
     const text = await readFrom(path, cached.offset, size);
     // Stop at the last full line; a half-written one gets read next time.
     const end = text.lastIndexOf("\n") + 1;
     const items = [...cached.items];
-    for (const line of text.slice(0, end).split("\n")) if (line) items.push(...feedItems(line));
-    cached = { offset: cached.offset + Buffer.byteLength(text.slice(0, end)), items };
+    for (const line of text.slice(0, end).split("\n")) {
+      if (!line) continue;
+      for (const item of feedItems(line, cached.ctx)) {
+        // A skill run again loads a note and then its markdown, as two records: one row.
+        const last = items.at(-1);
+        if (item.kind === "skill" && last?.kind === "skill" && last.text === item.text) {
+          items[items.length - 1] = { ...last, body: clipFeed(`${last.body}\n\n${item.body}`, FOLDED_BODY_MAX) };
+        } else items.push(item);
+      }
+    }
+    cached = { offset: cached.offset + Buffer.byteLength(text.slice(0, end)), items, ctx: cached.ctx };
   }
   feedCache.set(path, cached);
   return cached.items;

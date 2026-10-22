@@ -245,6 +245,12 @@ function repoDir(cwd: string): Promise<string | null> {
   return dir;
 }
 
+/** The name of the main checkout behind `cwd`: the same for every worktree of a repo. */
+export async function repoName(cwd: string): Promise<string | null> {
+  const dir = await repoDir(cwd);
+  return dir ? basename(dir) : null;
+}
+
 async function githubRepo(cwd: string): Promise<string | null> {
   if (repos.has(cwd)) return repos.get(cwd) ?? null;
   let repo: string | null = null;

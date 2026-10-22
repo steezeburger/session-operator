@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, watch } from "node:fs";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { extname, isAbsolute, join, resolve } from "node:path";
@@ -9,12 +9,14 @@ import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
+import { approvalEffort, keepApprovalEfforts, messageEffort } from "./effort.ts";
 import { nextActionFor } from "./next-action.ts";
 import { workItem } from "./mentions.ts";
-import { mergedInto, refsFor, trackerContext } from "./refs.ts";
+import { mergedInto, refsFor, repoName, trackerContext } from "./refs.ts";
 import { cleanupPlan, runCleanup, sessionTree } from "./cleanup.ts";
-import { closeSession, liveSessions, sendReply } from "./reply.ts";
-import { fullReplies, mentionCounts, readFeed, scanSessions, toolResolvedSince } from "./sessions.ts";
+import { parseUntil, pause, pauseOf, unpause } from "./pauses.ts";
+import { closeSession, focusSession, liveSessions, sendReply, terminalKinds } from "./reply.ts";
+import { fullReplies, mentionCounts, PROJECTS_DIR, readFeed, scanSessions, toolResolvedSince } from "./sessions.ts";
 import type { Behavior, OperatorState, PendingDecision, PermissionUpdate, Session, SessionStatus } from "./types.ts";
 
 const PORT = Number(process.env.OPERATOR_PORT ?? 4477);
@@ -73,6 +75,34 @@ const listeners = new Set<() => void>();
 
 function changed() {
   for (const fn of listeners) fn();
+}
+
+// Push a change whenever a transcript is written, so the deck doesn't have to poll for them. A
+// streaming turn writes many times a second and each push rescans every transcript, so at most one
+// push per TRANSCRIPT_PUSH_MS, with a trailing one so the last write is never missed.
+const TRANSCRIPT_PUSH_MS = 500;
+let pushTimer: ReturnType<typeof setTimeout> | null = null;
+let pushAgain = false;
+function transcriptChanged() {
+  if (pushTimer) {
+    pushAgain = true;
+    return;
+  }
+  changed();
+  pushTimer = setTimeout(() => {
+    pushTimer = null;
+    if (pushAgain) {
+      pushAgain = false;
+      transcriptChanged();
+    }
+  }, TRANSCRIPT_PUSH_MS);
+}
+try {
+  watch(PROJECTS_DIR, { recursive: true }, (_event, file) => {
+    if (file?.endsWith(".jsonl")) transcriptChanged();
+  });
+} catch (e) {
+  console.warn(`not watching ${PROJECTS_DIR}, the deck will only see transcripts on its slow poll:`, e);
 }
 
 // osascript gets the text as argv, never interpolated into the script.
@@ -178,6 +208,7 @@ async function buildState(): Promise<OperatorState> {
         id,
         cwd: hs.cwd,
         project: projectName(hs.cwd),
+        repo: null,
         branch: null,
         title: null,
         customTitle: null,
@@ -188,8 +219,10 @@ async function buildState(): Promise<OperatorState> {
         nextAction: null,
         nextUrl: null,
         nextSays: [],
+        effort: null,
         nextLoading: false,
         live: false,
+        terminal: null,
         blockedOn: null,
         refs: [],
         trackers: { repo: null, shortcutSlug: null },
@@ -198,6 +231,8 @@ async function buildState(): Promise<OperatorState> {
         statusDetail: hs.detail,
         turnEnd: null,
         role: null,
+        paused: null,
+        startedAt: null,
         lastActivity: new Date(hs.at).toISOString(),
       });
     } else if (hs.at >= new Date(s.lastActivity).getTime()) {
@@ -207,8 +242,10 @@ async function buildState(): Promise<OperatorState> {
   }
 
   const live = await liveSessions();
+  const terminals = await terminalKinds([...live.values()]);
   for (const [id, s] of byId) {
     s.live = live.has(id);
+    s.terminal = terminals.get(live.get(id) ?? -1) ?? null;
     if (operatorIds.has(id)) s.role = "operator";
     if (s.live) continue;
     // No Claude process behind it: whatever the transcript last said, nobody can act on it now.
@@ -260,6 +297,7 @@ async function buildState(): Promise<OperatorState> {
       const explicit = /\bNext:/i.test(text) ? s.nextAction : null;
       s.nextAction = explicit ?? ai.action;
       s.nextUrl = ai.url;
+      if (ai.needsUser) s.effort = messageEffort(ai, text, s.cwd, changed);
       if (ai.say && !s.nextSays.includes(ai.say)) s.nextSays.push(ai.say);
       if (ai.blockedOn) {
         s.status = "blocked";
@@ -275,6 +313,7 @@ async function buildState(): Promise<OperatorState> {
   await Promise.all(
     [...byId.values()].map(async (s) => {
       s.trackers = await trackerContext(s.cwd);
+      s.repo = await repoName(s.cwd);
       if (s.status === "idle" || s.role === "operator") return;
       s.refs = await refsFor(s.cwd, s.branch, mentionCounts.get(s.id) ?? new Map(), changed);
       if (s.status === "closed") s.mergedInto = await mergedInto(s.cwd, s.branch, changed);
@@ -285,13 +324,27 @@ async function buildState(): Promise<OperatorState> {
   const pendingList = [...pending.values()]
     .filter((p) => !p.decision)
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-    .map(({ waiters: _w, decision: _d, ...rest }) => rest);
+    .map(({ waiters: _w, decision: _d, ...rest }) => ({
+      ...rest,
+      effort: approvalEffort(rest, fullReplies.get(rest.sessionId), changed) ?? null,
+    }));
+  keepApprovalEfforts(new Set(pendingList.map((p) => p.id)));
 
   for (const p of pendingList) {
     const s = byId.get(p.sessionId);
     if (s) {
       s.status = "waiting";
       s.statusDetail = p.toolName === "AskUserQuestion" ? QUESTIONS_DETAIL : `Needs approval: ${p.toolName}`;
+    }
+  }
+
+  // A pause holds until its time, or until the session fails or ends. Replying to it ends one too
+  // (UserPromptSubmit, below). A new approval or question doesn't: it waits in the Paused group.
+  for (const s of byId.values()) {
+    s.paused = pauseOf(s.id);
+    if (s.paused && (s.status === "failing" || s.status === "closed")) {
+      unpause(s.id);
+      s.paused = null;
     }
   }
 
@@ -329,7 +382,7 @@ async function nudgeTick() {
   const current = new Set<string>();
   const ready: { key: string; line: string }[] = [];
   for (const s of sessions) {
-    if (s.role === "operator" || !s.live || !NUDGE_STATUSES.includes(s.status)) continue;
+    if (s.role === "operator" || !s.live || s.paused || !NUDGE_STATUSES.includes(s.status)) continue;
     const what = s.status === "done" ? (s.nextAction ?? "finished its turn") : s.statusDetail;
     const key = `${s.id}|${s.status}|${what}`;
     current.add(key);
@@ -394,13 +447,14 @@ app.post("/api/hook", async (c) => {
         toolInput: body.tool_input ?? null,
         detail: detailOf(body.tool_input),
         suggestions: Array.isArray(body.permission_suggestions) ? (body.permission_suggestions as PermissionUpdate[]) : [],
+        effort: null,
         createdAt: new Date(now).toISOString(),
         expiresAt: new Date(Date.now() + timeoutMs).toISOString(),
         waiters: new Set(),
       };
       pending.set(entry.id, entry);
       lastAsk.set(sessionId, toolName);
-      if (Date.now() - now < 5000) notify(`${project} needs approval`, `${toolName}: ${entry.summary}`);
+      if (Date.now() - now < 5000 && !pauseOf(sessionId)) notify(`${project} needs approval`, `${toolName}: ${entry.summary}`);
       changed();
       return c.json({ id: entry.id, boot: BOOT });
     }
@@ -413,7 +467,7 @@ app.post("/api/hook", async (c) => {
       } else {
         setHookStatus(sessionId, "waiting", message, cwd);
         const alreadyPinged = [...pending.values()].some((p) => p.sessionId === sessionId);
-        if (!alreadyPinged) notify(`${project} is waiting`, message);
+        if (!alreadyPinged && !pauseOf(sessionId)) notify(`${project} is waiting`, message);
       }
       break;
     }
@@ -423,6 +477,7 @@ app.post("/api/hook", async (c) => {
       setHookStatus(sessionId, "done", "Finished its turn, your move", cwd);
       break;
     case "SessionEnd":
+      unpause(sessionId);
       dropPendingFor(sessionId);
       lastAsk.delete(sessionId);
       setHookStatus(sessionId, "closed", "Session ended", cwd);
@@ -435,6 +490,8 @@ app.post("/api/hook", async (c) => {
         dropPendingFor(sessionId);
         lastAsk.delete(sessionId);
       }
+      // You typed into it (in its terminal, the deck or sop say), so you're on it now.
+      if (event === "UserPromptSubmit") unpause(sessionId);
       setHookStatus(sessionId, "working", "Working", cwd);
       break;
   }
@@ -499,7 +556,46 @@ app.post("/api/sessions/:id/reply", async (c) => {
   } catch {
     return c.json({ error: "Couldn't type into it - tmux failed, or iTerm needs Automation allowed in System Settings" }, 500);
   }
+  // Replying means you're on it. UserPromptSubmit does this too, but only for the server the hook posts to.
+  if (unpause(c.req.param("id"))) changed();
   return c.json({ ok: true });
+});
+
+// Brings its iTerm tab or tmux pane to the front.
+app.post("/api/sessions/:id/focus", async (c) => {
+  try {
+    const result = await focusSession(c.req.param("id"));
+    if (result === "not-running") return c.json({ error: "That session isn't running anymore" }, 409);
+    if (result === "no-terminal") return c.json({ error: "Couldn't find its iTerm tab or tmux pane" }, 409);
+  } catch {
+    return c.json({ error: "Couldn't focus it - tmux failed, or iTerm needs Automation allowed in System Settings" }, 500);
+  }
+  return c.json({ ok: true });
+});
+
+// Puts a session off until a time ("tomorrow 9am", "2h", an ISO date; see parseUntil), or until
+// you unpause it when there's no until.
+app.post("/api/sessions/:id/pause", async (c) => {
+  const id = c.req.param("id");
+  const { until } = (await c.req.json().catch(() => ({}))) as { until?: unknown };
+  if (until != null && typeof until !== "string") return c.json({ error: "until must be text" }, 400);
+  if (operatorIds.has(id)) return c.json({ error: "The operator can't be paused" }, 409);
+  let at: Date | null;
+  try {
+    at = parseUntil(until ?? "");
+  } catch (e) {
+    return c.json({ error: (e as Error).message }, 400);
+  }
+  if (at && at.getTime() <= Date.now()) return c.json({ error: "That time already passed" }, 400);
+  const p = pause(id, at);
+  changed();
+  return c.json(p);
+});
+
+app.post("/api/sessions/:id/unpause", (c) => {
+  const was = unpause(c.req.param("id"));
+  changed();
+  return c.json({ ok: true, was });
 });
 
 // Images dropped into a reply. Saved to a temp file; the reply then types the path, which

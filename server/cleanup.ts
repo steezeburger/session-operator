@@ -55,13 +55,35 @@ async function listeners(): Promise<Map<number, string[]>> {
   return out;
 }
 
-async function describe(pids: number[]): Promise<Map<number, { age: number; command: string }>> {
-  const out = new Map<number, { age: number; command: string }>();
+interface ProcInfo {
+  age: number;
+  ppid: number;
+  /** The executable's file name, which can have spaces (Google Chrome). */
+  name: string;
+  command: string;
+}
+
+async function describe(pids: number[]): Promise<Map<number, ProcInfo>> {
+  const out = new Map<number, ProcInfo>();
   if (pids.length === 0) return out;
-  const { stdout } = await run("ps", ["-o", "pid=,etime=,command=", "-p", pids.join(",")]).catch((e) => ({ stdout: String(e.stdout ?? "") }));
-  for (const line of stdout.split("\n")) {
-    const m = line.trim().match(/^(\d+)\s+(\S+)\s+(.*)$/);
-    if (m) out.set(Number(m[1]), { age: etimeSeconds(m[2] ?? ""), command: m[3] ?? "" });
+  const ps = (fields: string) => run("ps", ["-o", fields, "-p", pids.join(",")]).catch((e) => ({ stdout: String(e.stdout ?? "") }));
+  // comm and command both run to the end of the line, so they come from two calls.
+  const [withComm, withCommand] = await Promise.all([ps("pid=,ppid=,etime=,comm="), ps("pid=,command=")]);
+  const commands = new Map<number, string>();
+  for (const line of withCommand.stdout.split("\n")) {
+    const m = line.trim().match(/^(\d+)\s+(.*)$/);
+    if (m) commands.set(Number(m[1]), m[2] ?? "");
+  }
+  for (const line of withComm.stdout.split("\n")) {
+    const m = line.trim().match(/^(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/);
+    if (!m) continue;
+    const pid = Number(m[1]);
+    out.set(pid, {
+      age: etimeSeconds(m[3] ?? ""),
+      ppid: Number(m[2]),
+      name: (m[4] ?? "").split("/").pop() ?? "",
+      command: commands.get(pid) ?? m[4] ?? "",
+    });
   }
   return out;
 }
@@ -130,7 +152,7 @@ async function mergedPr(cwd: string, branch: string, head: string): Promise<numb
   }
 }
 
-async function worktreeItems(cwd: string, busy: { pid: number; command: string }[], plan: Plan) {
+async function worktreeItems(cwd: string, busy: { pid: number; name: string }[], plan: Plan) {
   let top: string;
   let common: string;
   try {
@@ -155,7 +177,7 @@ async function worktreeItems(cwd: string, busy: { pid: number; command: string }
       : !merged
         ? `${branch} isn't merged into ${base}`
         : busy.length > 0
-          ? `still in use by ${busy.map((b) => `${b.command.split(" ")[0]?.split("/").pop()} (${b.pid})`).join(", ")}`
+          ? `still in use by ${busy.map((b) => `${b.name} (${b.pid})`).join(", ")}`
           : null;
   plan.items.push({
     id: "worktree",
@@ -207,7 +229,7 @@ async function buildPlan(sessionId: string, claudePid: number | undefined, known
     plan.items.push({
       id: `pid:${pid}`,
       kind: "process",
-      label: `Stop ${p.command.split(" ")[0]?.split("/").pop()} on port ${ports.get(pid)?.join(", ")}`,
+      label: `Stop ${p.name} on port ${ports.get(pid)?.join(", ")}`,
       detail: `${p.command.slice(0, 160)}${own ? "" : " · running since before this session"}`,
       available: true,
       defaultOn: own,
@@ -215,10 +237,31 @@ async function buildPlan(sessionId: string, claudePid: number | undefined, known
     plan.run.set(`pid:${pid}`, () => stop(pid));
   }
 
+  // Orphans: their parent went away and launchd took them (Chrome's crashpad handler does this
+  // on purpose), so they're out of its tree. One that started during the session is its
+  // leftover, offered like a server instead of blocking the worktree.
+  const orphans = otherPids.filter((pid) => {
+    const p = info.get(pid);
+    return p && p.ppid === 1 && p.age <= sessionAge && !serverPids.includes(pid);
+  });
+  for (const pid of orphans) {
+    const p = info.get(pid) as ProcInfo;
+    plan.items.push({
+      id: `pid:${pid}`,
+      kind: "process",
+      label: `Stop ${p.name}`,
+      detail: `${p.command.slice(0, 160)} · left running in its folder`,
+      available: true,
+      defaultOn: true,
+    });
+    plan.run.set(`pid:${pid}`, () => stop(pid));
+  }
+
   // Shells and other processes sitting in the folder block removing it, but aren't stopped for you.
   const busy = otherPids
-    .map((pid) => ({ pid, command: info.get(pid)?.command ?? "" }))
-    .filter((b) => b.command && !serverPids.includes(b.pid));
+    .filter((pid) => !serverPids.includes(pid) && !orphans.includes(pid))
+    .map((pid) => ({ pid, name: info.get(pid)?.name ?? "" }))
+    .filter((b) => b.name);
   await worktreeItems(cwd, busy, plan);
 
   const tmpRoot = `/private/tmp/claude-${process.getuid?.() ?? ""}`;
