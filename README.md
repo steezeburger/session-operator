@@ -42,8 +42,8 @@ Each session shows the work it's for, found from its branch:
   `gh issue develop` makes; also `issue-123-...`, `feat/123-...`), plus any issue the
   branch's PR closes ("Closes #123", or `owner/repo#123` in another repo). If the issue is on
   a GitHub Project, its Status column shows as the state, and Done counts as shipped, unless
-  it was closed as not planned. That needs `gh auth refresh -s read:project`; without it you
-  get open/closed/done.
+  it was closed as not planned. That needs the `read:project` scope, which `sop setup`
+  asks gh for; without it you get open/closed/done.
 - **Shortcut cards** - a branch that names one (`sc-123/...`), when `SHORTCUT_API_TOKEN` is set.
 
 Cards, issues and PRs that Claude only mentions are listed separately and link out too.
