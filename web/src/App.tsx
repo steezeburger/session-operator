@@ -2,10 +2,13 @@ import { type CSSProperties, Fragment, type ReactNode, type RefObject, useCallba
 import { flushSync } from "react-dom";
 import type { Behavior, Effort, OperatorState, PendingDecision, PermissionUpdate, Session, SessionStatus } from "../../server/types.ts";
 import { setFavicon } from "./favicon.ts";
+import { dissolve, Score, SettingsPanel, useFun, useSettings } from "./Fun.tsx";
 import { MatrixRain } from "./MatrixRain.tsx";
 import { closedOutcome, focusRefs, RefLink, RefList, sessionMatches, sessionName } from "./Refs.tsx";
 import { PauseMenu, untilLabel } from "./Pause.tsx";
 import { TermButton } from "./TermButton.tsx";
+import { KeyHint, OPERATOR_INPUT, useKeys } from "./keys.tsx";
+import { FoldMark, foldProps, useFolds } from "./Fold.tsx";
 import { WithPaths } from "./Paths.tsx";
 import { ReplyBox } from "./ReplyBox.tsx";
 import { SessionDetail } from "./SessionDetail.tsx";
@@ -258,6 +261,7 @@ function useCalmState(live: OperatorState | null, list: RefObject<HTMLElement | 
 function withSent(st: OperatorState | null, sent: Set<string>): OperatorState | null {
   if (!st || sent.size === 0) return st;
   return {
+    ...st,
     pending: st.pending.filter((p) => !sent.has(p.id) && !sent.has(p.sessionId)),
     sessions: st.sessions.map((s) =>
       sent.has(s.id) && (s.status === "waiting" || s.status === "done") ? { ...s, status: "working" as const } : s,
@@ -312,12 +316,16 @@ function GroupHeader({
   count,
   color,
   lead,
+  open,
+  onToggle,
   children,
 }: {
   name: string;
   title: string;
   count: number;
   color: string;
+  open: boolean;
+  onToggle: (key: string) => void;
   /** Goes in the left column's slot on this line: the sort control, on the first header. */
   lead?: ReactNode;
   children?: ReactNode;
@@ -325,10 +333,20 @@ function GroupHeader({
   return (
     <div className="mb-1 flex items-center gap-2">
       <div className={GUTTER}>{lead}</div>
-      <h2 style={vt(`g-${name}`)} className="flex min-w-0 flex-1 items-center gap-2 text-xs font-bold uppercase tracking-widest">
+      <h2
+        style={vt(`g-${name}`)}
+        {...foldProps(name, open, onToggle)}
+        className="flex min-w-0 flex-1 items-center gap-2 text-xs font-bold uppercase tracking-widest"
+      >
+        <FoldMark open={open} />
         <span className={`inline-block h-2.5 w-2.5 ${color}`} />
         {">"} {title} [{count}]
-        {children && <span className="ml-auto font-normal normal-case tracking-normal">{children}</span>}
+        {children && (
+          // Its controls don't fold the section.
+          <span className="ml-auto font-normal normal-case tracking-normal" onClick={(e) => e.stopPropagation()}>
+            {children}
+          </span>
+        )}
       </h2>
     </div>
   );
@@ -378,9 +396,11 @@ function QuestionForm({ questions, onAnswer }: { questions: Question[]; onAnswer
                 <button
                   key={o.label}
                   type="button"
+                  data-pick
                   onClick={() => pick(q, o.label)}
                   className={`${OPTION} ${on ? "border-code bg-code text-black" : "border-code-dim bg-black hover:border-code"}`}
                 >
+                  <KeyHint />
                   <span className="font-bold">{o.label}</span>
                   {o.description && <span className={`ml-2 text-xs ${on ? "text-black" : "text-code-dim"}`}>{o.description}</span>}
                 </button>
@@ -402,9 +422,11 @@ function QuestionForm({ questions, onAnswer }: { questions: Question[]; onAnswer
         <button
           type="button"
           disabled={!ready}
+          data-key="y"
           onClick={send}
           className="border border-code bg-code px-5 py-1 text-sm font-bold uppercase text-black [text-shadow:none] enabled:hover:bg-black enabled:hover:text-code disabled:opacity-40"
         >
+          <KeyHint k="y" />
           Send answers
         </button>
       )}
@@ -476,9 +498,11 @@ function PendingCard({
         <div className="mt-2 flex flex-wrap items-center gap-2">
           {!questions && <button
             type="button"
+            data-key="y"
             onClick={() => onDecide("allow")}
             className="border border-code bg-code px-5 py-1 text-sm font-bold uppercase text-black [text-shadow:none] hover:bg-black hover:text-code hover:[text-shadow:0_0_4px_rgb(0_255_65/0.6)]"
           >
+            <KeyHint k="y" />
             Approve
           </button>}
           {!questions &&
@@ -486,18 +510,22 @@ function PendingCard({
               <button
                 key={i}
                 type="button"
+                data-pick
                 onClick={() => onDecide("allow", { suggestion: i })}
                 title={JSON.stringify(u)}
                 className="max-w-full truncate border border-code px-3 py-1 text-left text-sm font-bold text-code hover:bg-code hover:text-black hover:[text-shadow:none]"
               >
+                <KeyHint />
                 Yes, {suggestionLabel(u)}
               </button>
             ))}
           <button
             type="button"
+            data-key="n"
             onClick={() => onDecide("deny")}
             className="border border-fail bg-fail px-5 py-1 text-sm font-bold uppercase text-black [text-shadow:none] hover:bg-black hover:text-fail"
           >
+            <KeyHint k="n" />
             {questions ? "Skip" : "Deny"}
           </button>
           {!inline && <span className="ml-2 truncate text-xs text-code-dim">{p.cwd}</span>}
@@ -525,6 +553,7 @@ function SessionRow({ s, now, leaving, onOpen }: { s: Session; now: number; leav
     <div
       role="button"
       tabIndex={0}
+      data-row={s.id}
       onClick={onOpen}
       onKeyDown={(e) => e.key === "Enter" && onOpen()}
       style={vt(`s-${s.id}`)}
@@ -567,8 +596,6 @@ function SessionRow({ s, now, leaving, onOpen }: { s: Session; now: number; leav
   );
 }
 
-const OPERATOR_INPUT = "operator-input";
-
 // The operator is always just the operator: no card, title or next step borrowed from the
 // sessions it talks about. White is its color and nobody else's. Pinned, so it's one glance
 // and one keystroke away however far down the list you are.
@@ -599,7 +626,7 @@ function OperatorConsole({
         ? s.lastPrompt && `on: ${s.lastPrompt}`
         : s.lastReply;
   return (
-    <article className={`${waiting ? "glow-needs border-needs" : "glow-op border-white"} mt-2 flex border bg-black`}>
+    <article data-row={s.id} className={`${waiting ? "glow-needs border-needs" : "glow-op border-white"} mt-2 flex border bg-black`}>
       <div className={`w-2 shrink-0 ${waiting ? "pulse bg-needs" : busy ? "bg-code" : "bg-white"}`} />
       <div className="min-w-0 flex-1 p-2">
         <div className="flex items-center gap-2">
@@ -650,7 +677,7 @@ function OperatorConsole({
             sessionId={s.id}
             says={s.nextSays}
             inputId={OPERATOR_INPUT}
-            placeholder="tell the operator (o to jump here, shift+enter for a new line)"
+            placeholder="tell the operator (o to jump here, shift+enter for a new line, ? for keys)"
           />
         )}
       </div>
@@ -772,6 +799,7 @@ function NeedsYouCard({
       {cell}
       <article
         tabIndex={0}
+        data-row={s.id}
         onClick={onOpen}
         onKeyDown={(e) => e.key === "Enter" && onOpen()}
         className="glow-needs relative flex min-w-0 flex-1 cursor-pointer border border-needs bg-black/85 hover:bg-code-dark/30"
@@ -884,28 +912,19 @@ export function App() {
   const { state, offline, refresh } = useOperatorState();
   const now = useNow();
   const [openId, setOpenId] = useState<string | null>(null);
+  // Opened by key, the panel keeps the cursor out of its reply box, so j/k still move.
+  const [byKey, setByKey] = useState(false);
+  const openRow = useCallback((id: string) => {
+    setByKey(false);
+    setOpenId(id);
+  }, []);
   const close = useCallback(() => setOpenId(null), []);
   const [query, setQuery] = useState("");
+  const { settings, change: changeSetting, error: settingsError } = useSettings();
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const closeSettings = useCallback(() => setSettingsOpen(false), []);
   const filterBox = useRef<HTMLInputElement>(null);
-
-  // "/" jumps to the filter, like most lists that have one. "o" jumps to the operator.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const typing = (e.target as Element | null)?.closest?.("input, textarea, [contenteditable]");
-      if (typing || openId || e.metaKey || e.ctrlKey || e.altKey) return;
-      if (e.key === "/") {
-        e.preventDefault();
-        filterBox.current?.focus();
-      } else if (e.key === "o") {
-        const box = document.getElementById(OPERATOR_INPUT);
-        if (!box) return;
-        e.preventDefault();
-        box.focus();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [openId]);
+  const deckHeader = useRef<HTMLDivElement>(null);
 
   const decide = async (id: string, behavior: Behavior, extra?: DecideExtra) => {
     const res = await fetch(`/api/decisions/${id}`, {
@@ -921,13 +940,14 @@ export function App() {
   // after a while if it never does (then the row moves back).
   const [sent, setSent] = useState(new Set<string>());
   const markSent = useCallback((id: string) => {
+    if (settings.dissolve) dissolve(id);
     setSent((cur) => new Set(cur).add(id));
     setTimeout(() => setSent((cur) => {
       const next = new Set(cur);
       next.delete(id);
       return next;
     }), 10_000);
-  }, []);
+  }, [settings.dissolve]);
 
   // The header, operator strip and panel are pinned, so they stay live. The list below holds
   // still while you're aiming at it.
@@ -948,6 +968,7 @@ export function App() {
   }, [state]);
   const pendingFor = (id: string) => list.pending.filter((p) => p.sessionId === id);
   const [sort, pickSort, flipSort] = useSort();
+  const folds = useFolds();
   const ctx: SortCtx = { now, pendingFor };
   const sorted = (rows: Session[]) => sortRows(rows, sort, ctx);
   // The sort control sits on the first open group's header line, right above the column.
@@ -961,12 +982,35 @@ export function App() {
     approvals.length +
     operators.filter((s) => s.status === "waiting" || pending.some((p) => p.sessionId === s.id)).length;
   useEffect(() => setFavicon(needsCount), [needsCount]);
+  const fun = useFun(state, settings, needsCount, pausedCount);
+  const keys = useKeys({
+    openId,
+    open: (id) => {
+      setByKey(true);
+      setOpenId(id);
+    },
+    isSession: (id) => all.some((s) => s.id === id),
+    filterBox,
+    header: deckHeader,
+    modalOpen: settingsOpen,
+    onSettings: () => setSettingsOpen(true),
+  });
 
   return (
     <main className="mx-auto max-w-6xl px-4 pb-4">
-      <MatrixRain />
+      {settings.rain && <MatrixRain calm={fun.calm} burst={fun.burst} />}
+      {fun.banner}
+      {settingsOpen && (
+        <SettingsPanel
+          settings={settings}
+          error={settingsError}
+          points={state?.points}
+          onChange={(key, on) => void changeSetting(key, on)}
+          onClose={closeSettings}
+        />
+      )}
       {/* Named so rows mid-transition stay under it, not drawn on top. */}
-      <div style={vt("deck-header")} className="sticky top-0 z-20 bg-black pb-2 pt-4">
+      <div ref={deckHeader} style={vt("deck-header")} className="sticky top-0 z-20 bg-black pb-2 pt-4">
         <header className={`${BORDER} glow flex items-baseline justify-between bg-black/85 px-2 py-1`}>
           <h1 className="cursor shrink-0 text-sm font-bold uppercase tracking-widest">Session operator</h1>
           <input
@@ -986,6 +1030,13 @@ export function App() {
             <span className="pulse shrink-0 bg-fail px-2 text-xs font-bold uppercase text-black [text-shadow:none]">connection lost</span>
           ) : (
             <span className="shrink-0 text-xs text-code-dim">
+              {settings.points && state && <Score points={state.points} floaters={fun.floaters} />}
+              <button type="button" onClick={() => setSettingsOpen(true)} className="mr-3 hover:text-code" title="Settings">
+                settings
+              </button>
+              <button type="button" onClick={keys.showHelp} className="mr-3 hover:text-code" title="Keyboard shortcuts">
+                ? keys
+              </button>
               {query ? `${sessions.length} of ${everyone.length} match` : `${everyone.length} signals in the matrix`}
             </span>
           )}
@@ -1000,7 +1051,7 @@ export function App() {
               ...allGroups.filter((g) => g.rows.length > 0).map((g) => ({ title: g.title, count: g.rows.length, color: g.color })),
               ...(pausedCount > 0 ? [{ title: "Paused", count: pausedCount, color: "border border-code-dim" }] : []),
             ]}
-            onOpen={() => setOpenId(s.id)}
+            onOpen={() => openRow(s.id)}
             onDecide={(id, b, a) => void decide(id, b, a)}
           />
         ))}
@@ -1018,11 +1069,19 @@ export function App() {
           </div>
         )}
         {list.approvals.length > 0 && (
-          <section className="mt-6">
-            <GroupHeader name="approve" title="Approve?" count={list.approvals.length} color="bg-needs" lead={sortControl} />
-            <div className="space-y-2">
+          <section data-section="approve" className="mt-6">
+            <GroupHeader
+              name="approve"
+              title="Approve?"
+              count={list.approvals.length}
+              color="bg-needs"
+              lead={sortControl}
+              open={folds.isOpen("approve")}
+              onToggle={folds.toggle}
+            />
+            {folds.isOpen("approve") && <div className="space-y-2">
               {list.approvals.map((p) => (
-                <div key={p.id} style={vt(`p-${p.id}`)} className="relative flex gap-2">
+                <div key={p.id} data-row={p.id} style={vt(`p-${p.id}`)} className="relative flex gap-2">
                   <div className={`${GUTTER} pt-2`}>
                     <EffortBars effort={p.effort} />
                   </div>
@@ -1034,26 +1093,28 @@ export function App() {
                   <Leaving to={leaving.get(p.id)} />
                 </div>
               ))}
-            </div>
+            </div>}
           </section>
         )}
 
         {list.groups
           .filter((g) => g.rows.length > 0)
           .map((g) => (
-            <section key={g.key} className="mt-6">
+            <section key={g.key} data-section={g.key} className="mt-6">
               <GroupHeader
                 name={g.key}
                 title={g.title}
                 count={g.rows.length}
                 color={g.color}
                 lead={firstHeader === g.key && sortControl}
+                open={folds.isOpen(g.key)}
+                onToggle={folds.toggle}
               >
                 {g.key === "needs" && g.rows.length > 1 && (
                   <PauseMenu ids={g.rows.map((s) => s.id)} label={query ? `pause these ${g.rows.length}` : "pause all"} />
                 )}
               </GroupHeader>
-              {g.key === "needs" ? (
+              {!folds.isOpen(g.key) ? null : g.key === "needs" ? (
                 <div className="space-y-2">
                   {sorted(g.rows).map((s) => (
                     <NeedsYouCard
@@ -1063,7 +1124,7 @@ export function App() {
                       now={now}
                       pending={pendingFor(s.id)}
                       leaving={leaving.get(s.id)}
-                      onOpen={() => setOpenId(s.id)}
+                      onOpen={() => openRow(s.id)}
                       // Its last approval answered, it goes back to work.
                       onDecide={(id, b, x) =>
                         void decide(id, b, x).then((ok) => ok && pendingFor(s.id).length === 1 && markSent(s.id))
@@ -1073,7 +1134,7 @@ export function App() {
                   ))}
                 </div>
               ) : (
-                <SessionTable name={g.key} sessions={sorted(g.rows)} now={now} leaving={leaving} onOpen={setOpenId} sort={sort} ctx={ctx} />
+                <SessionTable name={g.key} sessions={sorted(g.rows)} now={now} leaving={leaving} onOpen={openRow} sort={sort} ctx={ctx} />
               )}
             </section>
           ))}
@@ -1087,33 +1148,48 @@ export function App() {
         )}
 
         {list.paused.length > 0 && (
-          <details className="mt-6">
-            <summary style={vt("g-paused")} className={`${PAST_GUTTER} mb-1 cursor-pointer text-xs font-bold uppercase tracking-widest text-code-dim`}>
+          <section data-section="paused" className="mt-6">
+            <h2
+              style={vt("g-paused")}
+              {...foldProps("paused", folds.isOpen("paused"), folds.toggle)}
+              className={`${PAST_GUTTER} mb-1 text-xs font-bold uppercase tracking-widest text-code-dim`}
+            >
+              <FoldMark open={folds.isOpen("paused")} />
               <span className="mr-2 inline-block h-2.5 w-2.5 border border-code-dim align-middle" />
               Paused [{list.paused.length}]
-            </summary>
-            <SessionTable name="paused" sessions={sorted(list.paused)} now={now} leaving={leaving} onOpen={setOpenId} sort={sort} ctx={ctx} />
-          </details>
+            </h2>
+            {folds.isOpen("paused") && <SessionTable name="paused" sessions={sorted(list.paused)} now={now} leaving={leaving} onOpen={openRow} sort={sort} ctx={ctx} />}
+          </section>
         )}
 
         {list.idle.length > 0 && (
-          <details className="mt-6">
-            <summary style={vt("g-idle")} className={`${PAST_GUTTER} mb-1 cursor-pointer text-xs font-bold uppercase tracking-widest text-code-dim`}>
+          <section data-section="idle" className="mt-6">
+            <h2
+              style={vt("g-idle")}
+              {...foldProps("idle", folds.isOpen("idle"), folds.toggle)}
+              className={`${PAST_GUTTER} mb-1 text-xs font-bold uppercase tracking-widest text-code-dim`}
+            >
+              <FoldMark open={folds.isOpen("idle")} />
               <span className="mr-2 inline-block h-2.5 w-2.5 bg-code-dark align-middle" />
               Idle [{list.idle.length}]
-            </summary>
-            <SessionTable name="idle" sessions={sorted(list.idle)} now={now} leaving={leaving} onOpen={setOpenId} sort={sort} ctx={ctx} />
-          </details>
+            </h2>
+            {folds.isOpen("idle") && <SessionTable name="idle" sessions={sorted(list.idle)} now={now} leaving={leaving} onOpen={openRow} sort={sort} ctx={ctx} />}
+          </section>
         )}
 
         {list.closed.length > 0 && (
-          <details className="mt-4">
-            <summary style={vt("g-closed")} className={`${PAST_GUTTER} mb-1 cursor-pointer text-xs font-bold uppercase tracking-widest text-code-dim`}>
+          <section data-section="closed" className="mt-4">
+            <h2
+              style={vt("g-closed")}
+              {...foldProps("closed", folds.isOpen("closed"), folds.toggle)}
+              className={`${PAST_GUTTER} mb-1 text-xs font-bold uppercase tracking-widest text-code-dim`}
+            >
+              <FoldMark open={folds.isOpen("closed")} />
               <span className="mr-2 inline-block h-2.5 w-2.5 border border-code-dim align-middle" />
               Closed, last 24h [{list.closed.length}]
-            </summary>
-            <SessionTable name="closed" sessions={sorted(list.closed)} now={now} leaving={leaving} onOpen={setOpenId} sort={sort} ctx={ctx} />
-          </details>
+            </h2>
+            {folds.isOpen("closed") && <SessionTable name="closed" sessions={sorted(list.closed)} now={now} leaving={leaving} onOpen={openRow} sort={sort} ctx={ctx} />}
+          </section>
         )}
       </div>
 
@@ -1122,6 +1198,7 @@ export function App() {
           key={openSession.id}
           session={openSession}
           onClose={close}
+          autoFocus={!byKey}
           decisions={pending
             .filter((p) => p.sessionId === openSession.id)
             .map((p) => (
@@ -1129,6 +1206,7 @@ export function App() {
             ))}
         />
       )}
+      {keys.overlay}
     </main>
   );
 }

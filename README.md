@@ -51,6 +51,21 @@ Cards, issues and PRs that Claude only mentions are listed separately and link o
 appear; a bare `#123` only links once it turns out to be a real issue or PR in the session's
 repo.
 
+## Settings and points
+
+`settings` in the header (or `,`) turns the rain, the banners, the dissolve and the score on or
+off. They're saved in `~/.config/session-operator/settings.json`. Sort order, folds and panel
+width stay in the browser.
+
+Points go in `points.jsonl` next to it, one event per line:
+
+- a reply to a session waiting on you: 10, plus 5 per minute of its effort estimate (up to 110)
+- answering its questions on the deck: 15
+- an approval on the deck: 5, allow or deny
+- something shipping (a PR merged, a card done, a branch merged locally): 100, once per session and branch
+
+Nothing pays for speed. A bonus for fast approvals would reward not reading them.
+
 ## The operator
 
 `sop operator` starts a Claude Code session whose job is running the others. It gets its

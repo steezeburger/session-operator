@@ -118,3 +118,56 @@ body::after {
     animation: none;
   }
 }
+
+/* Key hints (keys.tsx): hidden until their row is highlighted. Numbered ones count the
+   `data-pick` buttons in their row or panel, in on-screen order. */
+[data-row],
+[data-panel] {
+  counter-reset: pick;
+}
+[data-pick] {
+  counter-increment: pick;
+}
+.kh {
+  display: none;
+  margin-right: 0.4em;
+  font-weight: normal;
+  text-transform: none;
+  opacity: 0.7;
+}
+.kh-n::before {
+  content: "[" counter(pick) "]";
+}
+
+/* Deck moments (Fun.tsx). On or off in settings. */
+.banner {
+  animation: banner-life 4s ease-out both;
+}
+
+@keyframes banner-life {
+  0% {
+    opacity: 0;
+  }
+  6%,
+  85% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+.floater {
+  animation: float-off 1.6s ease-out both;
+}
+
+@keyframes float-off {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(1.5rem);
+  }
+}
