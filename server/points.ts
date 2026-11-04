@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { CONFIG_DIR } from "./settings.ts";
+import { CONFIG_DIR } from "./config.ts";
 import type { Effort, PointEvent, PointKind, Points, Session } from "./types.ts";
 
 // An append-only ledger, one event per line. Points pay for finishing things and for the thought

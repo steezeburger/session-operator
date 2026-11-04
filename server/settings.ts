@@ -1,11 +1,9 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { CONFIG_DIR } from "./config.ts";
 import { DEFAULT_SETTINGS, type Settings } from "./types.ts";
 
-// What should outlive a reboot: settings.json here, points.jsonl next to it. View state (sort,
-// folds, panel width) stays in the browser.
-export const CONFIG_DIR = process.env.OPERATOR_CONFIG_DIR ?? join(homedir(), ".config", "session-operator");
+// settings.json in the config folder. View state (sort, folds, panel width) stays in the browser.
 const SETTINGS_FILE = join(CONFIG_DIR, "settings.json");
 
 // Read every time, so a hand edit takes effect on the next load. Missing is just the defaults.

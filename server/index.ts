@@ -10,6 +10,7 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { approvalEffort, keepApprovalEfforts, messageEffort } from "./effort.ts";
+import { stateFile } from "./config.ts";
 import { nextActionFor } from "./next-action.ts";
 import { awardAnswer, awardApproval, awardQuestion, noteShipped, pointsSummary } from "./points.ts";
 import { getSettings, saveSettings } from "./settings.ts";
@@ -56,7 +57,7 @@ const QUESTIONS_DETAIL = "Has questions for you";
 
 // The one session started with `sop operator`. Kept on disk so a server restart doesn't forget
 // it, and so `sop operator` can resume the same session next time. A newer one replaces it.
-const ROLES_FILE = join(tmpdir(), "session-operator-roles.json");
+const ROLES_FILE = stateFile("roles.json");
 const operatorIds = new Set<string>(
   (() => {
     try {

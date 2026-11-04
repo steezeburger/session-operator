@@ -4,7 +4,7 @@
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -224,7 +224,10 @@ async function operator(args) {
   args = args.filter((a) => a !== "--new");
   let last = null;
   try {
-    last = JSON.parse(readFileSync(join(tmpdir(), "session-operator-roles.json"), "utf8")).at(-1) ?? null;
+    const config = process.env.OPERATOR_CONFIG_DIR ?? join(homedir(), ".config", "session-operator");
+    // In temp until the server's next restart moves it (server/config.ts).
+    const roles = [join(config, "roles.json"), join(tmpdir(), "session-operator-roles.json")].find((f) => existsSync(f));
+    last = roles ? (JSON.parse(readFileSync(roles, "utf8")).at(-1) ?? null) : null;
   } catch {}
   // One operator at a time, --new included: the server only tracks the newest.
   if (last) {

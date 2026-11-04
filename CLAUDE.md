@@ -10,9 +10,10 @@ runs the others. Hono server on 127.0.0.1:4477, React + Tailwind v4 web app (Mat
 - `server/refs.ts` - card/issue/PR refs for a session, one adapter per tracker (Shortcut, GitHub)
 - `server/next-action.ts` - what a session needs from the user
 - `server/reply.ts` - types into a session's iTerm tab or tmux pane, `closeSession` (`/exit` + close it)
-- `server/pauses.ts` - paused sessions (kept in a temp JSON file) and the `until` parser
-- `server/settings.ts`, `server/points.ts` - `settings.json` and the append-only `points.jsonl`, in
-  `~/.config/session-operator` (`OPERATOR_CONFIG_DIR` moves it, use that for a test deck)
+- `server/pauses.ts` - paused sessions and the `until` parser
+- `server/config.ts` - `~/.config/session-operator`, for state that has to outlive a reboot (`roles.json`,
+  `pauses.json`). Never the temp folder, macOS purges it
+- `server/settings.ts`, `server/points.ts` - `settings.json` and the append-only `points.jsonl`, in that folder
 - `server/cleanup.ts` - what ending a session can clean up (servers in its folder, a merged clean
   worktree and its branch, its scratch folder) and running the picked items after `/exit`
 - `web/src/` - `App.tsx` (list + operator strip), `SessionDetail.tsx` (panel), `Refs.tsx`, `Fun.tsx` (settings panel, banners, score)
@@ -34,7 +35,7 @@ runs the others. Hono server on 127.0.0.1:4477, React + Tailwind v4 web app (Mat
   an hour; the terminal shows the same prompt meanwhile, and answering either one wins.
 - `sop` is symlinked into `~/.local/bin`. Not `op`, that's 1Password.
 - Env: `OPERATOR_URL`, `OPERATOR_PORT`, `OPERATOR_ROLE` (set by `sop operator`), `OPERATOR_TERMINAL` (`iterm` or `tmux`, for `sop start`, default iterm),
-  `OPERATOR_NUDGES=0` and `OPERATOR_NOTIFY=0` to turn those off, `OPERATOR_CONFIG_DIR`.
+  `OPERATOR_NUDGES=0` and `OPERATOR_NOTIFY=0` to turn those off, `OPERATOR_CONFIG_DIR` (set it for a test deck).
 - Card refs read `SHORTCUT_API_TOKEN`. Never print it.
 
 ## Gotchas

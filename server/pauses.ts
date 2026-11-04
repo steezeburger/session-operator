@@ -1,12 +1,11 @@
 import { readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { stateFile } from "./config.ts";
 import type { Pause } from "./types.ts";
 
 // Paused sessions are kept on disk next to the roles file, so a restart keeps them and sop
 // and the deck see the same thing.
-const PAUSES_FILE = join(tmpdir(), "session-operator-pauses.json");
+const PAUSES_FILE = stateFile("pauses.json");
 const pauses = new Map<string, Pause>(
   (() => {
     try {
