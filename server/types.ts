@@ -120,6 +120,41 @@ export interface PermissionUpdate {
 export interface OperatorState {
   pending: PendingDecision[];
   sessions: Session[];
+  points: Points;
+}
+
+/** ~/.config/session-operator/settings.json. Every key is on/off. */
+export interface Settings {
+  /** The rain behind the deck. */
+  rain: boolean;
+  /** ALL CLEAR when nothing needs you, and the rain slows. */
+  allClear: boolean;
+  /** A purple burst and a banner when something ships. */
+  shipped: boolean;
+  /** A row falls apart into glyphs when you answer it. */
+  dissolve: boolean;
+  /** The score in the header and +N as you earn it. Points are still logged with this off. */
+  points: boolean;
+}
+
+export const DEFAULT_SETTINGS: Settings = { rain: true, allClear: true, shipped: true, dissolve: true, points: true };
+
+export type PointKind = "answered" | "approved" | "shipped";
+
+export interface PointEvent {
+  id: string;
+  at: string;
+  kind: PointKind;
+  points: number;
+  /** A session's name, or for "shipped" what shipped. */
+  label: string;
+}
+
+export interface Points {
+  total: number;
+  today: number;
+  /** The last few events, oldest first. The deck plays the ones it hasn't seen. */
+  recent: PointEvent[];
 }
 
 export type Behavior = "allow" | "deny";

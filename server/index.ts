@@ -12,6 +12,8 @@ import { streamSSE } from "hono/streaming";
 import { approvalEffort, keepApprovalEfforts, messageEffort } from "./effort.ts";
 import { stateFile } from "./config.ts";
 import { nextActionFor } from "./next-action.ts";
+import { awardAnswer, awardApproval, awardQuestion, noteShipped, pointsSummary } from "./points.ts";
+import { getSettings, saveSettings } from "./settings.ts";
 import { mergedInto, refLinks, refsFor, repoName } from "./refs.ts";
 import { cleanupPlan, runCleanup, sessionTree } from "./cleanup.ts";
 import { parseUntil, pause, pauseOf, unpause } from "./pauses.ts";
@@ -353,8 +355,13 @@ async function buildState(): Promise<OperatorState> {
       STATUS_ORDER[a.status] - STATUS_ORDER[b.status] ||
       b.lastActivity.localeCompare(a.lastActivity),
   );
-  return { pending: pendingList, sessions };
+  noteShipped(sessions);
+  for (const s of sessions) lastSeen.set(s.id, s);
+  return { pending: pendingList, sessions, points: pointsSummary() };
 }
+
+// Each session as the last build saw it, so a hook can tell what a prompt was answering.
+const lastSeen = new Map<string, Session>();
 
 // Nudges: when a worker has needed you for a while, the operator session hears about it.
 // Each state nudges once, only after it has lasted NUDGE_DELAY_MS (so a tab you're already
@@ -491,7 +498,15 @@ app.post("/api/hook", async (c) => {
         lastAsk.delete(sessionId);
       }
       // You typed into it (in its terminal, the deck or sop say), so you're on it now.
-      if (event === "UserPromptSubmit") unpause(sessionId);
+      if (event === "UserPromptSubmit") {
+        unpause(sessionId);
+        // A reply to what it was waiting on scores once. /exit and friends aren't replies.
+        const was = lastSeen.get(sessionId);
+        if (was && was.role !== "operator" && (was.status === "done" || was.status === "waiting") && !str(body.prompt)?.startsWith("/")) {
+          awardAnswer(sessionLabel(was), was.effort);
+          lastSeen.delete(sessionId);
+        }
+      }
       setHookStatus(sessionId, "working", "Working", cwd);
       break;
   }
@@ -537,6 +552,10 @@ app.post("/api/decisions/:id", async (c) => {
     entry.decision.updatedInput = { ...(entry.toolInput as Record<string, unknown>), answers };
   }
   for (const w of entry.waiters) w();
+  const asked = lastSeen.get(entry.sessionId);
+  const who = asked ? sessionLabel(asked) : projectName(entry.cwd);
+  if (entry.toolName === "AskUserQuestion") awardQuestion(who);
+  else awardApproval(who);
   // If no hook is listening anymore, forget it after a short grace period.
   setTimeout(() => pending.delete(entry.id), 30_000);
   setHookStatus(entry.sessionId, "working", "Working", entry.cwd);
@@ -545,6 +564,19 @@ app.post("/api/decisions/:id", async (c) => {
 });
 
 app.get("/api/state", async (c) => c.json(await buildState()));
+
+app.get("/api/settings", (c) => c.json(getSettings()));
+
+app.post("/api/settings", async (c) => {
+  const patch = (await c.req.json()) as Record<string, unknown>;
+  try {
+    const next = saveSettings(patch);
+    changed();
+    return c.json(next);
+  } catch {
+    return c.json({ error: "settings.json isn't valid JSON - fix it first, the deck won't overwrite it" }, 409);
+  }
+});
 
 app.post("/api/sessions/:id/reply", async (c) => {
   const { text } = (await c.req.json()) as { text?: unknown };

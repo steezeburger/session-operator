@@ -26,6 +26,7 @@ const KEYMAP: [string, string][] = [
   ["1-9", "the numbered choices on the row"],
   ["esc", "leave the input; again to close the panel"],
   ["?", "this list"],
+  [",", "settings"],
 ];
 
 function CheatSheet({ onClose }: { onClose: () => void }) {
@@ -72,6 +73,8 @@ export function useKeys({
   isSession,
   filterBox,
   header,
+  modalOpen,
+  onSettings,
 }: {
   openId: string | null;
   /** Opened by key, so the panel leaves the cursor out of its reply box and j/k keep working. */
@@ -79,6 +82,9 @@ export function useKeys({
   isSession: (id: string) => boolean;
   filterBox: RefObject<HTMLInputElement | null>;
   header: RefObject<HTMLElement | null>;
+  /** The settings panel is up, and takes the keys itself. */
+  modalOpen: boolean;
+  onSettings: () => void;
 }) {
   const [selected, setSelected] = useState<string | null>(null);
   const [help, setHelp] = useState(false);
@@ -98,7 +104,7 @@ export function useKeys({
   useEffect(() => {
     // Capture, so it runs before the panel's own Escape handler.
     const onKey = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return;
+      if (e.metaKey || e.ctrlKey || e.altKey || e.isComposing || modalOpen) return;
       const target = e.target as Element | null;
       const typing = target?.closest?.("input, textarea, select, [contenteditable]");
 
@@ -208,6 +214,10 @@ export function useKeys({
           e.preventDefault();
           setHelp(true);
           return;
+        case ",":
+          e.preventDefault();
+          onSettings();
+          return;
         case "y":
         case "n":
           return press(scope?.querySelector<HTMLElement>(`[data-key="${e.key}"]`));
@@ -216,7 +226,7 @@ export function useKeys({
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [openId, open, isSession, selected, help, filterBox, header]);
+  }, [openId, open, isSession, selected, help, filterBox, header, modalOpen, onSettings]);
 
   // The highlighted row (or the open panel) shows its key hints.
   const scope = openId ? "[data-panel]" : selected ? `[data-row="${CSS.escape(selected)}"]` : null;
