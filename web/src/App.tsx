@@ -2,6 +2,7 @@ import { type CSSProperties, Fragment, type ReactNode, type RefObject, useCallba
 import { flushSync } from "react-dom";
 import type { Behavior, Effort, OperatorState, PendingDecision, PermissionUpdate, Session, SessionStatus } from "../../server/types.ts";
 import { setFavicon } from "./favicon.ts";
+import { dissolve, Score, SettingsPanel, useFun, useSettings } from "./Fun.tsx";
 import { MatrixRain } from "./MatrixRain.tsx";
 import { closedOutcome, focusRefs, RefLink, RefList, sessionMatches, sessionName } from "./Refs.tsx";
 import { PauseMenu, untilLabel } from "./Pause.tsx";
@@ -260,6 +261,7 @@ function useCalmState(live: OperatorState | null, list: RefObject<HTMLElement | 
 function withSent(st: OperatorState | null, sent: Set<string>): OperatorState | null {
   if (!st || sent.size === 0) return st;
   return {
+    ...st,
     pending: st.pending.filter((p) => !sent.has(p.id) && !sent.has(p.sessionId)),
     sessions: st.sessions.map((s) =>
       sent.has(s.id) && (s.status === "waiting" || s.status === "done") ? { ...s, status: "working" as const } : s,
@@ -918,6 +920,9 @@ export function App() {
   }, []);
   const close = useCallback(() => setOpenId(null), []);
   const [query, setQuery] = useState("");
+  const { settings, change: changeSetting, error: settingsError } = useSettings();
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const closeSettings = useCallback(() => setSettingsOpen(false), []);
   const filterBox = useRef<HTMLInputElement>(null);
   const deckHeader = useRef<HTMLDivElement>(null);
 
@@ -935,13 +940,14 @@ export function App() {
   // after a while if it never does (then the row moves back).
   const [sent, setSent] = useState(new Set<string>());
   const markSent = useCallback((id: string) => {
+    if (settings.dissolve) dissolve(id);
     setSent((cur) => new Set(cur).add(id));
     setTimeout(() => setSent((cur) => {
       const next = new Set(cur);
       next.delete(id);
       return next;
     }), 10_000);
-  }, []);
+  }, [settings.dissolve]);
 
   // The header, operator strip and panel are pinned, so they stay live. The list below holds
   // still while you're aiming at it.
@@ -976,6 +982,7 @@ export function App() {
     approvals.length +
     operators.filter((s) => s.status === "waiting" || pending.some((p) => p.sessionId === s.id)).length;
   useEffect(() => setFavicon(needsCount), [needsCount]);
+  const fun = useFun(state, settings, needsCount, pausedCount);
   const keys = useKeys({
     openId,
     open: (id) => {
@@ -985,11 +992,23 @@ export function App() {
     isSession: (id) => all.some((s) => s.id === id),
     filterBox,
     header: deckHeader,
+    modalOpen: settingsOpen,
+    onSettings: () => setSettingsOpen(true),
   });
 
   return (
     <main className="mx-auto max-w-6xl px-4 pb-4">
-      <MatrixRain />
+      {settings.rain && <MatrixRain calm={fun.calm} burst={fun.burst} />}
+      {fun.banner}
+      {settingsOpen && (
+        <SettingsPanel
+          settings={settings}
+          error={settingsError}
+          points={state?.points}
+          onChange={(key, on) => void changeSetting(key, on)}
+          onClose={closeSettings}
+        />
+      )}
       {/* Named so rows mid-transition stay under it, not drawn on top. */}
       <div ref={deckHeader} style={vt("deck-header")} className="sticky top-0 z-20 bg-black pb-2 pt-4">
         <header className={`${BORDER} glow flex items-baseline justify-between bg-black/85 px-2 py-1`}>
@@ -1011,6 +1030,10 @@ export function App() {
             <span className="pulse shrink-0 bg-fail px-2 text-xs font-bold uppercase text-black [text-shadow:none]">connection lost</span>
           ) : (
             <span className="shrink-0 text-xs text-code-dim">
+              {settings.points && state && <Score points={state.points} floaters={fun.floaters} />}
+              <button type="button" onClick={() => setSettingsOpen(true)} className="mr-3 hover:text-code" title="Settings">
+                settings
+              </button>
               <button type="button" onClick={keys.showHelp} className="mr-3 hover:text-code" title="Keyboard shortcuts">
                 ? keys
               </button>

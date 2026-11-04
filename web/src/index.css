@@ -138,3 +138,36 @@ body::after {
 .kh-n::before {
   content: "[" counter(pick) "]";
 }
+
+/* Deck moments (Fun.tsx). On or off in settings. */
+.banner {
+  animation: banner-life 4s ease-out both;
+}
+
+@keyframes banner-life {
+  0% {
+    opacity: 0;
+  }
+  6%,
+  85% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+.floater {
+  animation: float-off 1.6s ease-out both;
+}
+
+@keyframes float-off {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(1.5rem);
+  }
+}
