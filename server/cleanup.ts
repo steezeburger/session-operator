@@ -88,14 +88,12 @@ async function describe(pids: number[]): Promise<Map<number, ProcInfo>> {
   return out;
 }
 
-/**
- * The session's own process tree: Claude, the shells above it in its tab or pane, and
- * everything it started. All of it goes when the session exits and its tab closes, which
- * happens before cleanup runs, so none of it counts as "in use".
- */
-export async function sessionTree(claudePid: number | undefined): Promise<Set<number>> {
-  const tree = new Set<number>();
-  if (!claudePid) return tree;
+interface ProcTable {
+  parent: Map<number, number>;
+  children: Map<number, number[]>;
+}
+
+async function procTable(): Promise<ProcTable> {
   const { stdout } = await run("ps", ["-axo", "pid=,ppid="]).catch(() => ({ stdout: "" }));
   const parent = new Map<number, number>();
   const children = new Map<number, number[]>();
@@ -105,17 +103,35 @@ export async function sessionTree(claudePid: number | undefined): Promise<Set<nu
     parent.set(pid, ppid);
     children.set(ppid, [...(children.get(ppid) ?? []), pid]);
   }
-  // Up to (not including) launchd; the folder check later drops ancestors outside the session.
-  for (let p: number | undefined = claudePid; p && p > 1; p = parent.get(p)) tree.add(p);
-  const stack = [claudePid];
+  return { parent, children };
+}
+
+/** Every process under `roots`, the roots included. */
+function descendants({ children }: ProcTable, roots: number[]): Set<number> {
+  const out = new Set<number>(roots);
+  const stack = [...roots];
   while (stack.length > 0) {
     for (const c of children.get(stack.pop() as number) ?? []) {
-      if (!tree.has(c)) {
-        tree.add(c);
+      if (!out.has(c)) {
+        out.add(c);
         stack.push(c);
       }
     }
   }
+  return out;
+}
+
+/**
+ * sessionTree returns the session's own process tree: Claude, the shells above it in its tab
+ * or pane, and everything it started. All of it goes when the session exits and its tab closes, which
+ * happens before cleanup runs, so none of it counts as "in use".
+ */
+export async function sessionTree(claudePid: number | undefined): Promise<Set<number>> {
+  if (!claudePid) return new Set();
+  const table = await procTable();
+  const tree = descendants(table, [claudePid]);
+  // Up to (not including) launchd; the folder check later drops ancestors outside the session.
+  for (let p: number | undefined = claudePid; p && p > 1; p = table.parent.get(p)) tree.add(p);
   return tree;
 }
 
@@ -132,9 +148,17 @@ function alive(pid: number) {
   }
 }
 
+/** Stops `pid` and everything under it, so a runner's children (just, docker) aren't stranded. */
 async function stop(pid: number) {
-  process.kill(pid, "SIGTERM");
-  for (let i = 0; i < 20 && alive(pid); i++) await new Promise((r) => setTimeout(r, 100));
+  const tree = [...descendants(await procTable(), [pid])];
+  for (const p of tree) {
+    try {
+      process.kill(p, "SIGTERM");
+    } catch {
+      // already gone
+    }
+  }
+  for (let i = 0; i < 20 && tree.some(alive); i++) await new Promise((r) => setTimeout(r, 100));
   if (alive(pid)) throw new Error("still running after SIGTERM");
 }
 
@@ -257,9 +281,11 @@ async function buildPlan(sessionId: string, claudePid: number | undefined, known
     plan.run.set(`pid:${pid}`, () => stop(pid));
   }
 
-  // Shells and other processes sitting in the folder block removing it, but aren't stopped for you.
+  /* Shells and other processes sitting in the folder block removing it, but aren't stopped for you.
+     Children of an offered server or orphan go with it when it's stopped, so they don't block. */
+  const offered = descendants(await procTable(), [...serverPids, ...orphans]);
   const busy = otherPids
-    .filter((pid) => !serverPids.includes(pid) && !orphans.includes(pid))
+    .filter((pid) => !offered.has(pid))
     .map((pid) => ({ pid, name: info.get(pid)?.name ?? "" }))
     .filter((b) => b.name);
   await worktreeItems(cwd, busy, plan);
