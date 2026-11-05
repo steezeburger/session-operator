@@ -672,7 +672,8 @@ function OperatorConsole({
             ))}
           </div>
         )}
-        {pending.length === 0 && (
+        {pending.length === 0 && !s.terminal && <NoTyping />}
+        {pending.length === 0 && s.terminal && (
           <ReplyBox
             sessionId={s.id}
             says={s.nextSays}
@@ -683,6 +684,10 @@ function OperatorConsole({
       </div>
     </article>
   );
+}
+
+function NoTyping() {
+  return <p className="mt-1 text-xs text-code-dim">not in iTerm2 or tmux, so reply in its own terminal</p>;
 }
 
 // One imperative line per "needs you" session: what the user does next, not what Claude did.
@@ -853,7 +858,7 @@ function NeedsYouCard({
               claude: {s.lastReply}
             </p>
           )}
-          {s.live && pending.length === 0 && <ReplyBox sessionId={s.id} says={s.nextSays} onSent={onSent} />}
+          {s.live && pending.length === 0 && (s.terminal ? <ReplyBox sessionId={s.id} says={s.nextSays} onSent={onSent} /> : <NoTyping />)}
         </div>
         <Leaving to={leaving} />
       </article>

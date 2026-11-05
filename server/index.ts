@@ -408,10 +408,18 @@ async function nudgeTick() {
   if (op.status === "working" || op.status === "waiting" || op.status === "blocked") return;
   // Names only. The details are one click away; a summary of each one is just noise.
   const text = `[operator nudge] ${ready.map((r) => r.line).join(", ")}`;
-  const result = await sendReply(op.id, text).catch(() => null);
+  const result = await sendReply(op.id, text).catch(() => "typing failed - tmux, or iTerm needs Automation allowed in System Settings");
+  noteNudgeProblem(result === "sent" ? null : result);
   if (result !== "sent") return;
   lastNudgeAt = now;
   for (const r of ready) nudged.add(r.key);
+}
+
+// Tries again every tick, so this only logs when the reason changes.
+let nudgeProblem: string | null = null;
+function noteNudgeProblem(problem: string | null) {
+  if (problem && problem !== nudgeProblem) console.warn(`can't nudge the operator: ${problem}`);
+  nudgeProblem = problem;
 }
 
 setInterval(() => void nudgeTick().catch(() => {}), NUDGE_TICK_MS);

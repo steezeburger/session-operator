@@ -10,8 +10,8 @@ session is doing, and when one needs a permission you can approve or deny it her
 ## Run it
 
 Needs macOS, Node, pnpm, the `claude` CLI and `gh` (logged in). Replies and ending
-sessions type into iTerm2 or tmux (tmux inside iTerm2 works too); other terminals can
-still watch, approve and answer.
+sessions type into iTerm2 or tmux (tmux inside iTerm2 works too). Sessions in other terminals
+can be watched and approved from the deck, and you reply to them in their own terminal.
 
 ```sh
 pnpm install

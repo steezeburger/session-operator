@@ -10,6 +10,23 @@ import { fileURLToPath } from "node:url";
 
 const BASE = process.env.OPERATOR_URL ?? "http://127.0.0.1:4477";
 
+// What a running session sets for itself. When the operator runs sop start, these must not
+// reach the new session: OPERATOR_ROLE would make it the operator.
+const SESSION_ENV = [
+  "OPERATOR_ROLE",
+  "CLAUDECODE",
+  "CLAUDE_PID",
+  "CLAUDE_EFFORT",
+  "CLAUDE_CODE_ENTRYPOINT",
+  "CLAUDE_CODE_EXECPATH",
+  "CLAUDE_CODE_SESSION_ID",
+  "CLAUDE_CODE_CHILD_SESSION",
+  "CLAUDE_CODE_SESSION_ATTENDED",
+  "CLAUDE_CODE_BRIDGE_SESSION_ID",
+  "CLAUDE_CODE_MESSAGING_SOCKET",
+  "CLAUDE_CODE_MESSAGING_TOKEN",
+];
+
 const USAGE = `sop - session operator
 
   sop setup [--dry-run]           install the hooks in ~/.claude/settings.json and sop in ~/.local/bin
@@ -184,11 +201,16 @@ function start(args) {
 // inside tmux (tmux attach -t sop to see them). claude runs as the window's command, as argv,
 // so the window closes when it exits.
 function startInTmux(dir, name, prompt) {
-  const window = ["-n", name, "-c", dir, "--", "claude", prompt];
+  // env -u too: a tmux server that's already running may have kept these from whoever started it.
+  const unset = SESSION_ENV.flatMap((v) => ["-u", v]);
+  const window = ["-n", name, "-c", dir, "--", "env", ...unset, "claude", prompt];
   if (process.env.TMUX) return execFileSync("tmux", ["new-window", "-d", ...window]);
-  // The first one makes the session, so there's no stray shell window in it.
+  // The first one makes the session, so there's no stray shell window in it. It can also start
+  // the tmux server, which keeps this environment for good, so it doesn't get the session's.
   if (spawnSync("tmux", ["has-session", "-t", "=sop"], { stdio: "ignore" }).status !== 0) {
-    return execFileSync("tmux", ["new-session", "-d", "-s", "sop", ...window]);
+    const env = { ...process.env };
+    for (const v of SESSION_ENV) delete env[v];
+    return execFileSync("tmux", ["new-session", "-d", "-s", "sop", ...window], { env });
   }
   execFileSync("tmux", ["new-window", "-d", "-t", "=sop:", ...window]);
 }
@@ -230,30 +252,69 @@ async function operator(args) {
     const roles = [join(config, "roles.json"), join(tmpdir(), "session-operator-roles.json")].find((f) => existsSync(f));
     last = roles ? (JSON.parse(readFileSync(roles, "utf8")).at(-1) ?? null) : null;
   } catch {}
+  const here = dirname(fileURLToPath(import.meta.url));
+  // Without the server and the hooks this would be a normal session that only looks like the operator.
+  const state = await fetch(`${BASE}/api/state`)
+    .then((r) => r.json())
+    .catch(() => null);
+  if (!state) die(`the session operator server isn't running at ${BASE} - start it with pnpm start in ${resolve(here, "..")}`);
+  if (!hooksInstalled()) die(`the hooks aren't in ${SETTINGS} - run sop setup`);
+  if (!process.env.TMUX && process.env.TERM_PROGRAM !== "iTerm.app") {
+    console.error("this isn't iTerm2 or tmux, so the deck can't type into the operator: no nudges, and no replies from the deck");
+  }
   // One operator at a time, --new included: the server only tracks the newest.
-  if (last) {
-    const running = await fetch(`${BASE}/api/state`)
-      .then((r) => r.json())
-      .then((d) => d.sessions.some((s) => s.id === last && s.live))
-      .catch(() => false);
-    if (running) die(`the operator (${last.slice(0, 8)}) is already running in another tab`);
+  if (last && state.sessions.some((s) => s.id === last && s.live)) {
+    die(`the operator (${last.slice(0, 8)}) is already running in another tab`);
   }
   if (last && !fresh && !args.some((a) => a.startsWith("--resume") || a === "-r" || a === "--continue" || a === "-c")) {
     args = ["--resume", last, ...args];
   }
-  const here = dirname(fileURLToPath(import.meta.url));
+  if (!installed("claude")) die("claude isn't on your PATH");
   const prompt = readFileSync(join(here, "..", "docs", "operator-prompt.md"), "utf8");
   setBadge("session operator");
   const r = spawnSync("claude", ["--append-system-prompt", prompt, ...args], {
     stdio: "inherit",
     env: { ...process.env, OPERATOR_ROLE: "operator" },
   });
+  if (r.error) die(`couldn't start claude: ${r.error.message}`);
   process.exit(r.status ?? 1);
 }
 
 // The hooks the deck needs. PermissionRequest waits for your answer for up to an hour, so its
 // timeout sits just above the hook's own (OPERATOR_TIMEOUT_MS plus one poll).
 const HOOK_EVENTS = { PermissionRequest: 3660, Notification: 5, Stop: 5, UserPromptSubmit: 5, SessionEnd: 5 };
+const SETTINGS = join(homedir(), ".claude", "settings.json");
+
+function hooksInstalled() {
+  try {
+    const { hooks } = JSON.parse(readFileSync(SETTINGS, "utf8"));
+    return Object.keys(HOOK_EVENTS).every((event) => hooks[event].some((g) => g.hooks.some((h) => h.command?.includes("operator-hook"))));
+  } catch {
+    return false;
+  }
+}
+
+// Only asks whether it runs at all. A command that's there but unhappy still counts.
+const installed = (cmd) => !spawnSync(cmd, ["--version"], { stdio: "ignore" }).error;
+
+// What the hooks and the link can't fix, so "set up" doesn't mean more than it does.
+function missingPieces(bin) {
+  const out = [];
+  if (process.platform !== "darwin") out.push(`this is ${process.platform}: the deck only knows how to find and type into sessions on macOS`);
+  // The versions vite needs to build the deck.
+  const [major, minor] = process.versions.node.split(".").map(Number);
+  if (!(major > 22 || (major === 22 && minor >= 12) || (major === 20 && minor >= 19))) {
+    out.push(`node ${process.versions.node} can't build the deck: it needs 20.19+ or 22.12+`);
+  }
+  if (!installed("claude")) out.push("claude isn't on your PATH, so there are no sessions to run");
+  if (!installed("pnpm")) out.push("pnpm isn't on your PATH, and the deck needs it to install and build");
+  if (!process.env.PATH?.split(":").includes(bin)) {
+    out.push(`${bin} isn't on your PATH, so sop won't be found. Add this to your shell's rc file: export PATH="$HOME/.local/bin:$PATH"`);
+  }
+  const iterm = ["/Applications", join(homedir(), "Applications")].some((d) => existsSync(join(d, "iTerm.app")));
+  if (!iterm && !installed("tmux")) out.push("no iTerm2 or tmux, so the deck can watch sessions but can't type into them or start them");
+  return out;
+}
 
 function ghScopes() {
   const r = spawnSync("gh", ["auth", "status", "-h", "github.com"], { encoding: "utf8" });
@@ -267,9 +328,13 @@ function ghScopes() {
 // and this is a real terminal, runs the refresh (a code to paste in the browser) right here.
 // True once the scope is there.
 function projectScope(dry) {
+  if (!installed("gh")) {
+    console.log("gh isn't installed, so no PRs or issues until you install it and run gh auth login");
+    return false;
+  }
   const scopes = ghScopes();
   if (!scopes) {
-    console.log("gh isn't logged in to github.com, so no PRs or issues until you run gh auth login");
+    console.log("gh can't reach github.com as a logged-in user, so no PRs or issues until that's fixed. Try gh auth login");
     return false;
   }
   if (scopes.includes("read:project") || scopes.includes("project")) return true;
@@ -298,7 +363,7 @@ function setup(args) {
   if (!existsSync(hookPath)) die(`${hookPath} isn't there - update the main checkout first`);
   // Claude Code runs the command through a shell, so a path with spaces needs quotes.
   const hook = /^[\w./-]+$/.test(hookPath) ? hookPath : `'${hookPath.replaceAll("'", `'\\''`)}'`;
-  const settingsPath = join(homedir(), ".claude", "settings.json");
+  const settingsPath = SETTINGS;
   const changes = [];
 
   let settings = {};
@@ -347,8 +412,10 @@ function setup(args) {
     }
   }
 
-  console.log(changes.length === 0 ? "already set up" : `${dry ? "would " : ""}${changes.join("\n" + (dry ? "would " : ""))}`);
+  console.log(changes.length === 0 ? "the hooks and the sop link are already in place" : `${dry ? "would " : ""}${changes.join("\n" + (dry ? "would " : ""))}`);
   if (backup) console.log(`(old settings backed up to ${backup})`);
+  const missing = missingPieces(bin);
+  if (missing.length > 0) console.log(`\nstill missing:\n${missing.map((m) => `  - ${m}`).join("\n")}\n`);
   const projects = projectScope(dry);
   console.log(`
 then:
