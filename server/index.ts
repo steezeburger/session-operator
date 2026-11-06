@@ -12,9 +12,10 @@ import { streamSSE } from "hono/streaming";
 import { approvalEffort, keepApprovalEfforts, messageEffort } from "./effort.ts";
 import { stateFile } from "./config.ts";
 import { nextActionFor } from "./next-action.ts";
+import { workItem } from "./mentions.ts";
 import { awardAnswer, awardApproval, awardQuestion, noteShipped, pointsSummary } from "./points.ts";
 import { getSettings, saveSettings } from "./settings.ts";
-import { mergedInto, refLinks, refsFor, repoName } from "./refs.ts";
+import { mergedInto, checkoutName, refsFor, trackerContext } from "./refs.ts";
 import { cleanupPlan, runCleanup, sessionTree } from "./cleanup.ts";
 import { parseUntil, pause, pauseOf, unpause } from "./pauses.ts";
 import { closeSession, focusSession, liveSessions, sendReply, terminalKinds } from "./reply.ts";
@@ -210,7 +211,7 @@ async function buildState(): Promise<OperatorState> {
         id,
         cwd: hs.cwd,
         project: projectName(hs.cwd),
-        repo: null,
+        checkoutName: null,
         branch: null,
         title: null,
         customTitle: null,
@@ -227,7 +228,7 @@ async function buildState(): Promise<OperatorState> {
         terminal: null,
         blockedOn: null,
         refs: [],
-        refLinks: { shortcut: null, github: null },
+        trackers: { githubRepo: null, shortcutSlug: null },
         mergedInto: null,
         status: hs.status,
         statusDetail: hs.detail,
@@ -314,8 +315,8 @@ async function buildState(): Promise<OperatorState> {
 
   await Promise.all(
     [...byId.values()].map(async (s) => {
-      s.refLinks = await refLinks(s.cwd);
-      s.repo = await repoName(s.cwd);
+      s.trackers = await trackerContext(s.cwd);
+      s.checkoutName = await checkoutName(s.cwd);
       if (s.status === "idle" || s.role === "operator") return;
       s.refs = await refsFor(s.cwd, s.branch, mentionCounts.get(s.id) ?? new Map(), changed);
       if (s.status === "closed") s.mergedInto = await mergedInto(s.cwd, s.branch, changed);
@@ -376,7 +377,7 @@ const nudged = new Set<string>();
 let lastNudgeAt = 0;
 
 function sessionLabel(s: Session): string {
-  const card = s.refs.find((r) => r.source === "own" && r.kind === "card");
+  const card = workItem(s.refs);
   return card ? card.label : s.branch && s.branch !== "main" ? `${s.project} (${s.branch})` : s.project;
 }
 
@@ -407,10 +408,18 @@ async function nudgeTick() {
   if (op.status === "working" || op.status === "waiting" || op.status === "blocked") return;
   // Names only. The details are one click away; a summary of each one is just noise.
   const text = `[operator nudge] ${ready.map((r) => r.line).join(", ")}`;
-  const result = await sendReply(op.id, text).catch(() => null);
+  const result = await sendReply(op.id, text).catch(() => "typing failed - tmux, or iTerm needs Automation allowed in System Settings");
+  noteNudgeProblem(result === "sent" ? null : result);
   if (result !== "sent") return;
   lastNudgeAt = now;
   for (const r of ready) nudged.add(r.key);
+}
+
+// Tries again every tick, so this only logs when the reason changes.
+let nudgeProblem: string | null = null;
+function noteNudgeProblem(problem: string | null) {
+  if (problem && problem !== nudgeProblem) console.warn(`can't nudge the operator: ${problem}`);
+  nudgeProblem = problem;
 }
 
 setInterval(() => void nudgeTick().catch(() => {}), NUDGE_TICK_MS);

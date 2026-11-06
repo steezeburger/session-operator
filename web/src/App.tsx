@@ -536,8 +536,8 @@ function PendingCard({
 }
 
 // Name the repo, not the worktree folder; the branch or card says which worktree.
-function repoName(s: Session) {
-  return s.repo ?? s.project;
+function checkoutName(s: Session) {
+  return s.checkoutName ?? s.project;
 }
 
 function SessionRow({ s, now, leaving, onOpen }: { s: Session; now: number; leaving: string | undefined; onOpen: () => void }) {
@@ -562,11 +562,11 @@ function SessionRow({ s, now, leaving, onOpen }: { s: Session; now: number; leav
       {/* Paused: its real status, minus the pulse, since you've put it off. */}
       <div className={`px-1.5 py-0.5 font-bold ${s.paused ? style.block.replace("pulse", "opacity-60") : style.block}`}>{style.label}</div>
       <div className="min-w-0 truncate px-1.5 py-0.5" title={`${s.cwd}${s.branch ? ` (${s.branch})` : ""}`}>
-        <span className="font-bold">{repoName(s)}</span>
+        <span className="font-bold">{checkoutName(s)}</span>
         {refs.length > 0 ? (
           <span className="text-white">
             {refs.map((r, i) => (
-              <span key={`${r.tracker}:${r.id}`}>
+              <span key={r.key}>
                 {i === 0 ? " " : " · "}
                 <RefLink r={r} />
               </span>
@@ -672,7 +672,8 @@ function OperatorConsole({
             ))}
           </div>
         )}
-        {pending.length === 0 && (
+        {pending.length === 0 && !s.terminal && <NoTyping />}
+        {pending.length === 0 && s.terminal && (
           <ReplyBox
             sessionId={s.id}
             says={s.nextSays}
@@ -683,6 +684,10 @@ function OperatorConsole({
       </div>
     </article>
   );
+}
+
+function NoTyping() {
+  return <p className="mt-1 text-xs text-code-dim">not in iTerm2 or tmux, so reply in its own terminal</p>;
 }
 
 // One imperative line per "needs you" session: what the user does next, not what Claude did.
@@ -808,7 +813,7 @@ function NeedsYouCard({
         <div className="min-w-0 flex-1 p-2">
           <div className="flex items-baseline justify-between gap-4 text-xs">
             <span className="min-w-0 truncate" title={s.cwd}>
-              <span className="font-bold">{repoName(s)}</span>
+              <span className="font-bold">{checkoutName(s)}</span>
               {s.branch && <span className="text-code-dim"> {s.branch}</span>}
               {sessionName(s) && <span className="text-code-dim"> · {sessionName(s)}</span>}
               {s.topic && <span className="text-code-dim"> · now: {s.topic}</span>}
@@ -853,7 +858,7 @@ function NeedsYouCard({
               claude: {s.lastReply}
             </p>
           )}
-          {s.live && pending.length === 0 && <ReplyBox sessionId={s.id} says={s.nextSays} onSent={onSent} />}
+          {s.live && pending.length === 0 && (s.terminal ? <ReplyBox sessionId={s.id} says={s.nextSays} onSent={onSent} /> : <NoTyping />)}
         </div>
         <Leaving to={leaving} />
       </article>

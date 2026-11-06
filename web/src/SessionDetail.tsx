@@ -219,7 +219,7 @@ export function SessionDetail({
           )
         ))}
       <TermButton s={session} className={tab ?? undefined} />
-      {session.live && <EndSessionButton sessionId={session.id} onEnded={onClose} className={tab ?? undefined} />}
+      {session.live && session.terminal && <EndSessionButton sessionId={session.id} onEnded={onClose} className={tab ?? undefined} />}
       <button type="button" onClick={onClose} className={tab ?? "border border-code-dim px-2 text-xs uppercase hover:border-code"}>
         esc
       </button>
@@ -349,7 +349,7 @@ export function SessionDetail({
         }}
         aria-label={`${session.project} session`}
         onDragOver={(e) => {
-          if (!session.live || !e.dataTransfer.types.includes("Files")) return;
+          if (!session.live || !session.terminal || !e.dataTransfer.types.includes("Files")) return;
           e.preventDefault();
           setDragging(true);
         }}
@@ -359,7 +359,7 @@ export function SessionDetail({
         onDrop={(e) => {
           e.preventDefault();
           setDragging(false);
-          if (!session.live) return;
+          if (!session.live || !session.terminal) return;
           const files = imageFiles(e.dataTransfer.files);
           if (files.length > 0) images[1]((prev) => [...prev, ...files]);
         }}
@@ -463,6 +463,8 @@ export function SessionDetail({
         <footer className="border-t border-code-dim p-2">
           {decisions.length > 0 ? (
             <div className="max-h-[60vh] space-y-2 overflow-y-auto">{decisions}</div>
+          ) : session.live && !session.terminal ? (
+            <p className="text-xs text-code-dim">not in iTerm2 or tmux - reply in its own terminal</p>
           ) : session.live ? (
             // Tagged while you're typing in it, so it's clear whether keys go to the box or the deck.
             <div className="group relative [&_textarea::placeholder]:text-code-dim">
