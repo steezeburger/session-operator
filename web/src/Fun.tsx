@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type KeyboardEvent as ReactKeyboardEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { DEFAULT_SETTINGS, type OperatorState, type PointEvent, type Points, type Settings, type Theme } from "../../server/types.ts";
 import { randomGlyph } from "./MatrixRain.tsx";
 
@@ -67,6 +67,180 @@ export function useSettings() {
   return { settings, change, error };
 }
 
+// What the cockpit's settings window says about each setting, and its icon on a 16x16 grid.
+const HUD_ABOUT: Record<string, { icon: string; what: string; on: string; off: string }> = {
+  allClear: {
+    icon: "M13 3h2v3h-1v1h-1v1h-1v1h-1v1h-1v1H9v1H8v1H6v-1H5v-1H4v-1H3V9H2V7h2v1h1v1h1v1h2V9h1V8h1V7h1V6h1V5h1V4h1z",
+    what: "Tells you when you've cleared everything that was waiting on you.",
+    on: "A banner when nothing needs you.",
+    off: "The deck stays quiet.",
+  },
+  shipped: {
+    icon: "M7 1h2v1h1v2h1v5h1v1h1v3h-1v-1h-1v1H9v2H7v-2H5v-1H4v1H3v-3h1V9h1V4h1V2h1zM7 5v2h2V5z",
+    what: "Marks the moment a session's work lands.",
+    on: "A banner, and the cockpit flashes purple.",
+    off: "It just moves to Closed.",
+  },
+  dissolve: {
+    icon: "M2 2h4v4H2zM8 2h3v3H8zM13 2h2v2h-2zM2 8h3v3H2zM7 7h2v2H7zM11 7h2v2h-2zM2 13h2v2H2zM6 12h2v2H6zM10 11h1v1h-1zM13 12h1v1h-1z",
+    what: "What a row does as you answer it.",
+    on: "It falls apart into glyphs.",
+    off: "It just moves.",
+  },
+  points: {
+    icon: "M7 1h2v4h5v2h-1v1h-1v1h-1v2h1v3h-2v-1H9v-1H7v1H6v1H4v-3h1V9H4V8H3V7H2V5h5z",
+    what: "Answers pay more the bigger the ask, and shipping pays most.",
+    on: "The score up top, and +N as you earn it.",
+    off: "No score on the deck. It still adds up.",
+  },
+};
+
+/** A thumbnail of a theme, drawn rather than captured so it never goes stale. */
+function ThemePreview({ theme }: { theme: Theme }) {
+  if (theme === "matrix") {
+    return (
+      <svg className="hs-preview" viewBox="0 0 80 50" shapeRendering="crispEdges" role="img" aria-label="Matrix theme preview">
+        <rect width="80" height="50" fill="#000" />
+        <path fill="#0a5a22" d="M4 0h1v22H4zM13 0h1v38H13zM66 0h1v14H66zM75 0h1v44H75z" />
+        <rect x="8" y="4" width="64" height="4" fill="none" stroke="#00ff41" strokeWidth="0.5" />
+        <path fill="#ffb000" d="M18 12h44v7H18z" />
+        <path fill="#00ff41" d="M18 23h8v3h-8zM18 28h8v3h-8zM18 33h8v3h-8z" />
+        <path fill="#00a82b" d="M28 23h34v3H28zM28 28h26v3H28zM28 33h30v3H28z" />
+      </svg>
+    );
+  }
+  return (
+    <svg className="hs-preview" viewBox="0 0 80 50" shapeRendering="crispEdges" role="img" aria-label="Cyber HUD theme preview">
+      <rect width="80" height="50" fill="#4a4a60" />
+      <path fill="#050a07" d="M2 2h18v7H2zM22 2h32v7H22zM56 2h22v7H56zM8 11h70v26H8zM2 39h16v9H2zM20 39h38v9H20zM60 39h18v9H60z" />
+      <path fill="#14141c" d="M2 11h5v4H2zM2 16h5v4H2zM2 21h5v4H2z" />
+      <path fill="#ffc61a" d="M58 3h5v1h-5zM11 13h20v4H11z" />
+      <path fill="#5cf05c" d="M58 6h12v1H58zM11 20h7v2h-7zM11 24h7v2h-7zM11 28h7v2h-7zM62 43h2v2h-2z" />
+      <path fill="#3aa548" d="M20 20h40v2H20zM20 24h30v2H20zM20 28h36v2H20z" />
+      <path fill="#f0702a" d="M24 4h20v2H24zM5 42h6v3H5z" />
+      <path fill="#e04fd0" d="M5 6h1v2H5zM8 4h1v4H8zM11 5h1v3h-1z" />
+    </svg>
+  );
+}
+
+function HudSettings({
+  settings,
+  error,
+  points,
+  onChange,
+  onClose,
+}: {
+  settings: Settings;
+  error: string | null;
+  points: Points | undefined;
+  onChange: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
+  onClose: () => void;
+}) {
+  // The cockpit has no rain to turn off.
+  const rows = SETTING_ROWS.filter((row) => row.key !== "rain");
+  const [selected, setSelected] = useState(rows[0]!.key);
+  const [previewing, setPreviewing] = useState<Theme | null>(null);
+  const row = rows.find((r) => r.key === selected) ?? rows[0]!;
+  const about = HUD_ABOUT[row.key];
+  const box = useRef<HTMLDivElement>(null);
+
+  const focusRow = useCallback((key: string) => {
+    box.current?.querySelector<HTMLElement>(`[data-setting="${key}"]`)?.focus();
+  }, []);
+  // Starts on the table, so the arrows and enter work straight away.
+  useEffect(() => focusRow(rows[0]!.key), []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const onKeyDown = (e: ReactKeyboardEvent) => {
+    const step = e.key === "ArrowDown" || e.key === "j" ? 1 : e.key === "ArrowUp" || e.key === "k" ? -1 : 0;
+    if (!step) return;
+    e.preventDefault();
+    const at = rows.findIndex((r) => r.key === selected);
+    const next = rows[(at + step + rows.length) % rows.length]!.key;
+    setSelected(next);
+    focusRow(next);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70" onClick={onClose}>
+      <div ref={box} className="hs-window" role="dialog" aria-label="Settings" onClick={(e) => e.stopPropagation()} onKeyDown={onKeyDown}>
+        <h2 className="hs-title">Settings</h2>
+        <div className="hs-side">
+          <div className="hs-tab">Theme</div>
+          <div role="radiogroup" aria-label="Theme" className="space-y-1">
+            {THEME_ROWS.map((t) => (
+              <button
+                key={t.key}
+                type="button"
+                role="radio"
+                aria-checked={settings.theme === t.key}
+                className="hs-box"
+                onClick={() => onChange("theme", t.key)}
+                onPointerEnter={() => setPreviewing(t.key)}
+                onPointerLeave={() => setPreviewing(null)}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+          <div className="hs-tab hs-preview-tab">Appearance</div>
+          <ThemePreview theme={previewing ?? settings.theme} />
+        </div>
+        <div className="hs-main">
+          <div className="hs-tab">Deck</div>
+          <div className="hs-table">
+            <div className="hs-head">
+              <span>Setting</span>
+              <span>State</span>
+            </div>
+            {rows.map((r) => (
+              <button
+                key={r.key}
+                type="button"
+                role="switch"
+                aria-checked={settings[r.key]}
+                data-setting={r.key}
+                data-on={settings[r.key]}
+                className={`hs-row ${r.key === row.key ? "selected" : ""}`}
+                onClick={() => onChange(r.key, !settings[r.key])}
+                onPointerEnter={() => setSelected(r.key)}
+                onFocus={() => setSelected(r.key)}
+              >
+                <span>{r.label}</span>
+                <span className="hs-state">{settings[r.key] ? "On" : "Off"}</span>
+              </button>
+            ))}
+          </div>
+          {about && (
+            <div className="hs-about">
+              <svg className="hs-icon" viewBox="0 0 16 16" shapeRendering="crispEdges" aria-hidden="true">
+                <path d={about.icon} fill="currentColor" />
+              </svg>
+              <div>
+                <h3>{row.label}</h3>
+                <p>{about.what}</p>
+                <p>ON: {about.on}</p>
+                <p>OFF: {about.off}</p>
+              </div>
+            </div>
+          )}
+        </div>
+        <div className="hs-actions">
+          {points && (
+            <span className="hs-readout" title={`${points.today.toLocaleString()} today`}>
+              Score <b>{points.total.toLocaleString()}</b>
+            </span>
+          )}
+          <button type="button" className="hs-box" onClick={onClose}>
+            Close
+          </button>
+        </div>
+        {error && <p className="hs-note error">{error}</p>}
+        <p className="hs-note">saved in ~/.config/session-operator</p>
+      </div>
+    </div>
+  );
+}
+
 export function SettingsPanel({
   settings,
   error,
@@ -92,6 +266,10 @@ export function SettingsPanel({
     return () => window.removeEventListener("keydown", onKey, true);
   }, [onClose]);
 
+  if (settings.theme === "hud") {
+    return <HudSettings settings={settings} error={error} points={points} onChange={onChange} onClose={onClose} />;
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70" onClick={onClose}>
       <div className="glow w-full max-w-md border border-code bg-black p-4" onClick={(e) => e.stopPropagation()}>
@@ -112,8 +290,7 @@ export function SettingsPanel({
           ))}
         </div>
         <ul className="space-y-2 text-sm">
-          {/* The cockpit has no rain to turn off. */}
-          {SETTING_ROWS.filter((row) => row.key !== "rain" || settings.theme !== "hud").map((row) => (
+          {SETTING_ROWS.map((row) => (
             <li key={row.key}>
               <label className="flex cursor-pointer items-baseline gap-2">
                 <input

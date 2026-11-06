@@ -30,6 +30,36 @@ const KEYMAP: [string, string][] = [
 ];
 
 function CheatSheet({ onClose }: { onClose: () => void }) {
+  if (document.documentElement.dataset.theme === "hud") {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70" onClick={onClose}>
+        <div className="hs-window hs-keys" role="dialog" aria-label="Keys" onClick={(e) => e.stopPropagation()}>
+          <h2 className="hs-title">Keys</h2>
+          <div className="hs-main">
+            <div className="hs-table">
+              <div className="hs-head">
+                <span>Key</span>
+                <span>Does</span>
+              </div>
+              {KEYMAP.map(([k, what]) => (
+                <div key={k} className="hs-row">
+                  <span>{k}</span>
+                  <span className="hs-does">{what}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="hs-actions">
+            <p className="hs-note">letters and numbers do nothing while you type</p>
+            <button type="button" className="hs-box ml-auto" onClick={onClose}>
+              Close
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70" onClick={onClose}>
       <div className="glow border border-code bg-black p-4" onClick={(e) => e.stopPropagation()}>

@@ -6,7 +6,7 @@ const BURST_MS = 3000;
 // With nothing waiting on you, the rain falls at a third of its speed.
 const CALM_EVERY = 3;
 
-// The cockpit's pixel font has no katakana.
+// The cockpit's fonts have no katakana.
 const HUD_GLYPHS = "0123456789ABCDEF#%*+-<>";
 
 export const randomGlyph = () => {
