@@ -56,6 +56,14 @@ const rowEl = (id: string) => rows().find((el) => el.dataset.row === id);
 
 // Below the pinned header, and on screen.
 function reveal(el: HTMLElement, header: RefObject<HTMLElement | null>) {
+  // The cockpit's list scrolls in its own viewport, and the page doesn't.
+  const view = el.closest<HTMLElement>("[data-hud-view]");
+  if (view) {
+    const box = view.getBoundingClientRect();
+    const at = el.getBoundingClientRect();
+    if (at.top < box.top || at.bottom > box.bottom) view.scrollBy({ top: at.top - box.top - (box.height - at.height) / 2 });
+    return;
+  }
   const top = header.current?.getBoundingClientRect().bottom ?? 0;
   const r = el.getBoundingClientRect();
   if (r.top < top || r.bottom > window.innerHeight) {

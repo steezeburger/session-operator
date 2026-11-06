@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { DEFAULT_SETTINGS, type OperatorState, type PointEvent, type Points, type Settings } from "../../server/types.ts";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { DEFAULT_SETTINGS, type OperatorState, type PointEvent, type Points, type Settings, type Theme } from "../../server/types.ts";
 import { randomGlyph } from "./MatrixRain.tsx";
 
 const ALL_CLEAR_AFTER_MS = 2000;
@@ -11,7 +11,13 @@ const DISSOLVE_GLYPH = 14;
 const DISSOLVE_MAX = 260;
 const TICK_UP_MS = 600;
 
-const SETTING_ROWS: { key: keyof Settings; label: string; detail: string }[] = [
+const THEME_KEY = "deck-theme";
+const THEME_ROWS: { key: Theme; label: string; detail: string }[] = [
+  { key: "matrix", label: "Matrix", detail: "green rain" },
+  { key: "hud", label: "Cyber HUD", detail: "a riveted 90s cockpit" },
+];
+
+const SETTING_ROWS: { key: Exclude<keyof Settings, "theme">; label: string; detail: string }[] = [
   { key: "rain", label: "Rain", detail: "the digital rain behind the deck" },
   { key: "allClear", label: "All clear", detail: "a banner when nothing needs you, and the rain slows" },
   { key: "shipped", label: "Shipped", detail: "a purple burst and a banner when something ships" },
@@ -21,7 +27,10 @@ const SETTING_ROWS: { key: keyof Settings; label: string; detail: string }[] = [
 
 /** The saved settings, from settings.json. The defaults until they've loaded. */
 export function useSettings() {
-  const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
+  // The theme from last time, so a reload doesn't flash the other one while settings load.
+  const [settings, setSettings] = useState<Settings>(() =>
+    localStorage.getItem(THEME_KEY) === "hud" ? { ...DEFAULT_SETTINGS, theme: "hud" } : DEFAULT_SETTINGS,
+  );
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -31,22 +40,29 @@ export function useSettings() {
       .catch(() => {});
   }, []);
 
-  const change = useCallback(async (key: keyof Settings, on: boolean) => {
-    setSettings((cur) => ({ ...cur, [key]: on }));
+  const theme = settings.theme === "hud" ? "hud" : "matrix";
+  useLayoutEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem(THEME_KEY, theme);
+  }, [theme]);
+
+  const change = useCallback(async <K extends keyof Settings>(key: K, value: Settings[K]) => {
+    const before = settings[key];
+    setSettings((cur) => ({ ...cur, [key]: value }));
     const res = await fetch("/api/settings", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ [key]: on }),
+      body: JSON.stringify({ [key]: value }),
     }).catch(() => null);
     const body = (await res?.json().catch(() => null)) as (Settings & { error?: string }) | null;
     if (res?.ok && body) {
       setSettings(body);
       setError(null);
     } else {
-      setSettings((cur) => ({ ...cur, [key]: !on }));
+      setSettings((cur) => ({ ...cur, [key]: before }));
       setError(body?.error ?? "couldn't save that");
     }
-  }, []);
+  }, [settings]);
 
   return { settings, change, error };
 }
@@ -61,7 +77,7 @@ export function SettingsPanel({
   settings: Settings;
   error: string | null;
   points: Points | undefined;
-  onChange: (key: keyof Settings, on: boolean) => void;
+  onChange: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
   onClose: () => void;
 }) {
   useEffect(() => {
@@ -80,8 +96,24 @@ export function SettingsPanel({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70" onClick={onClose}>
       <div className="glow w-full max-w-md border border-code bg-black p-4" onClick={(e) => e.stopPropagation()}>
         <h2 className="mb-3 text-xs font-bold uppercase tracking-widest">Settings</h2>
+        <div className="mb-3 flex gap-2 text-sm" role="radiogroup" aria-label="Theme">
+          {THEME_ROWS.map((t) => (
+            <button
+              key={t.key}
+              type="button"
+              role="radio"
+              aria-checked={settings.theme === t.key}
+              onClick={() => onChange("theme", t.key)}
+              className={`flex-1 border px-2 py-1 text-left [text-shadow:none] ${settings.theme === t.key ? "border-code bg-code text-black" : "border-code-dim hover:border-code"}`}
+            >
+              <span className="font-bold">{t.label}</span>
+              <span className="block text-xs">{t.detail}</span>
+            </button>
+          ))}
+        </div>
         <ul className="space-y-2 text-sm">
-          {SETTING_ROWS.map((row) => (
+          {/* The cockpit has no rain to turn off. */}
+          {SETTING_ROWS.filter((row) => row.key !== "rain" || settings.theme !== "hud").map((row) => (
             <li key={row.key}>
               <label className="flex cursor-pointer items-baseline gap-2">
                 <input
@@ -265,7 +297,7 @@ export function dissolve(rowId: string) {
   }));
   const began = performance.now();
   ctx.font = `${DISSOLVE_GLYPH}px ui-monospace, monospace`;
-  ctx.fillStyle = "#00ff41";
+  ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--color-code").trim() || "#00ff41";
   const frame = (now: number) => {
     const t = (now - began) / DISSOLVE_MS;
     if (t >= 1) return canvas.remove();
