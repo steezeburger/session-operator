@@ -334,7 +334,7 @@ export function SessionDetail({
   }, [onClose]);
 
   return (
-    <div className="fixed inset-0 z-40 flex justify-end bg-black/60" onClick={() => !resizing.current && onClose()}>
+    <div data-panel-root className="fixed inset-0 z-40 flex justify-end bg-black/60" onClick={() => !resizing.current && onClose()}>
       <aside
         data-panel
         className="glow relative flex h-full w-full flex-col border-l border-code-dim bg-black md:w-[var(--panel-w)]"
