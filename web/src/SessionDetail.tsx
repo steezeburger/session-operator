@@ -1,5 +1,6 @@
 import { type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { CleanupItem, CleanupResult, FeedItem, Session } from "../../server/types.ts";
+import { HudEndWindow } from "./Hud.tsx";
 import { PauseMenu, unpauseSession, untilLabel } from "./Pause.tsx";
 import { WithPaths } from "./Paths.tsx";
 import { closedOutcome, focusRefs, RefList, sessionName } from "./Refs.tsx";
@@ -557,7 +558,19 @@ function EndSessionButton({ sessionId, onEnded, className }: { sessionId: string
       >
         end session
       </button>
-      {open && (
+      {open && document.documentElement.dataset.theme === "hud" ? (
+        <HudEndWindow
+          items={items}
+          picked={picked}
+          busy={busy}
+          error={error}
+          failed={failed}
+          onToggle={toggle}
+          onEnd={() => void end()}
+          onCancel={() => setOpen(false)}
+          onEnded={onEnded}
+        />
+      ) : open && (
         <div className="absolute right-0 top-full z-30 mt-1 w-[min(32rem,100cqw)] border border-fail bg-black p-2 text-left text-xs shadow-lg">
           {failed.length > 0 ? (
             <>

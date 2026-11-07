@@ -23,6 +23,7 @@ const SETTING_ROWS: { key: Exclude<keyof Settings, "theme">; label: string; deta
   { key: "shipped", label: "Shipped", detail: "a purple burst and a banner when something ships" },
   { key: "dissolve", label: "Dissolve", detail: "a row falls apart into glyphs when you answer it" },
   { key: "points", label: "Points", detail: "the score in the header, and +N as you earn it" },
+  { key: "radar", label: "Radar", detail: "how long since each session did anything, by the operator" },
 ];
 
 /** The saved settings, from settings.json. The defaults until they've loaded. */
@@ -112,11 +113,11 @@ function ThemePreview({ theme }: { theme: Theme }) {
   return (
     <svg className="hs-preview" viewBox="0 0 80 50" shapeRendering="crispEdges" role="img" aria-label="Cyber HUD theme preview">
       <rect width="80" height="50" fill="#4a4a60" />
-      <path fill="#050a07" d="M2 2h18v7H2zM22 2h32v7H22zM56 2h22v7H56zM8 11h70v26H8zM2 39h16v9H2zM20 39h38v9H20zM60 39h18v9H60z" />
+      <path fill="#0c0616" d="M2 2h18v7H2zM22 2h32v7H22zM56 2h22v7H56zM8 11h70v26H8zM2 39h16v9H2zM20 39h38v9H20zM60 39h18v9H60z" />
       <path fill="#14141c" d="M2 11h5v4H2zM2 16h5v4H2zM2 21h5v4H2z" />
       <path fill="#ffc61a" d="M58 3h5v1h-5zM11 13h20v4H11z" />
       <path fill="#5cf05c" d="M58 6h12v1H58zM11 20h7v2h-7zM11 24h7v2h-7zM11 28h7v2h-7zM62 43h2v2h-2z" />
-      <path fill="#3aa548" d="M20 20h40v2H20zM20 24h30v2H20zM20 28h36v2H20z" />
+      <path fill="#f0a818" d="M20 20h40v2H20zM20 24h30v2H20zM20 28h36v2H20z" />
       <path fill="#f0702a" d="M24 4h20v2H24zM5 42h6v3H5z" />
       <path fill="#e04fd0" d="M5 6h1v2H5zM8 4h1v4H8zM11 5h1v3h-1z" />
     </svg>
@@ -136,8 +137,8 @@ function HudSettings({
   onChange: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
   onClose: () => void;
 }) {
-  // The cockpit has no rain to turn off.
-  const rows = SETTING_ROWS.filter((row) => row.key !== "rain");
+  // The cockpit has no rain to turn off, and its radar is built in.
+  const rows = SETTING_ROWS.filter((row) => row.key !== "rain" && row.key !== "radar");
   const [selected, setSelected] = useState(rows[0]!.key);
   const [previewing, setPreviewing] = useState<Theme | null>(null);
   const row = rows.find((r) => r.key === selected) ?? rows[0]!;

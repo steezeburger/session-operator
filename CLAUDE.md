@@ -17,6 +17,7 @@ runs the others. Hono server on 127.0.0.1:4477, React + Tailwind v4 web app (Mat
 - `server/cleanup.ts` - what ending a session can clean up (servers in its folder, a merged clean
   worktree and its branch, its scratch folder) and running the picked items after `/exit`
 - `web/src/` - `App.tsx` (list + operator strip), `SessionDetail.tsx` (panel), `Refs.tsx`, `Fun.tsx` (settings panel, banners, score)
+- `web/src/Radar.tsx` - the zoomable staleness radar, in both themes
 - `web/src/Hud.tsx` - the Cyber HUD theme's instruments (`theme` in settings); its panel art and layout are at the end of `index.css`
 - `bin/operator-hook` - the Claude Code hook; posts each event to the server
 - `bin/sop` - the operator's CLI (`ls`, `feed`, `say`, `end`, `pause`, `unpause`, `start`, `operator`)
