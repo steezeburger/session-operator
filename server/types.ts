@@ -140,9 +140,11 @@ export interface Settings {
   dissolve: boolean;
   /** The score in the header and +N as you earn it. Points are still logged with this off. */
   points: boolean;
+  /** The radar beside the operator in Matrix. The cockpit always has its own. */
+  radar: boolean;
 }
 
-export const DEFAULT_SETTINGS: Settings = { theme: "matrix", rain: true, allClear: true, shipped: true, dissolve: true, points: true };
+export const DEFAULT_SETTINGS: Settings = { theme: "matrix", rain: true, allClear: true, shipped: true, dissolve: true, points: true, radar: true };
 
 export type PointKind = "answered" | "approved" | "shipped";
 

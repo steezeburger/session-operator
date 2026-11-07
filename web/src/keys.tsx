@@ -142,7 +142,7 @@ export function useKeys({
   useEffect(() => {
     // Capture, so it runs before the panel's own Escape handler.
     const onKey = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey || e.isComposing || modalOpen) return;
+      if (e.metaKey || e.ctrlKey || e.altKey || e.isComposing || modalOpen || document.querySelector("[data-modal]")) return;
       const target = e.target as Element | null;
       const typing = target?.closest?.("input, textarea, select, [contenteditable]");
 
@@ -271,7 +271,7 @@ export function useKeys({
   const style = (
     <style>
       {scope && `${scope} .kh { display: inline; }`}
-      {!openId && selected && `[data-row="${CSS.escape(selected)}"] { outline: 2px solid #fff; outline-offset: 1px; }`}
+      {!openId && selected && `[data-row="${CSS.escape(selected)}"] { outline: var(--row-selected-outline, 2px solid #fff); outline-offset: var(--row-selected-offset, 1px); --row-name: #fff; --row-value: #fff; --row-soft: #fff; --row-band: #4a2068; }`}
     </style>
   );
   const sheet = help ? <CheatSheet onClose={() => setHelp(false)} /> : null;

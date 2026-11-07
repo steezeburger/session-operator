@@ -4,6 +4,7 @@ import type { Behavior, Effort, OperatorState, PendingDecision, PermissionUpdate
 import { setFavicon } from "./favicon.ts";
 import { dissolve, Score, SettingsPanel, useFun, useSettings } from "./Fun.tsx";
 import { HudBottom, HudLeftRail, HudMeters, HudScore } from "./Hud.tsx";
+import { Radar } from "./Radar.tsx";
 import { MatrixRain } from "./MatrixRain.tsx";
 import { closedOutcome, focusRefs, RefLink, RefList, sessionMatches, sessionName } from "./Refs.tsx";
 import { PauseMenu, untilLabel } from "./Pause.tsx";
@@ -22,7 +23,7 @@ const STATUS_STYLE: Record<SessionStatus, { label: string; block: string; next: 
   waiting: { label: "NEEDS YOU", block: NEEDS_YOU, next: "Answer it" },
   done: { label: "YOUR MOVE", block: NEEDS_YOU, next: "Read + reply" },
   failing: { label: "FAILING", block: "bg-fail text-black [text-shadow:none]", next: "Check on it" },
-  working: { label: "WORKING", block: "bg-code text-black [text-shadow:none]", next: "Let it run" },
+  working: { label: "WORKING", block: "bg-working text-black [text-shadow:none]", next: "Let it run" },
   blocked: { label: "WAITING ON", block: "bg-blocked text-black [text-shadow:none]", next: "-" },
   idle: { label: "IDLE", block: "bg-code-dark text-code-dim", next: "-" },
   closed: { label: "CLOSED", block: "border border-code-dim text-code-dim", next: "-" },
@@ -32,7 +33,7 @@ const GROUPS: { key: string; title: string; statuses: SessionStatus[]; color: st
   { key: "needs", title: "Needs you", statuses: ["waiting", "done"], color: "bg-needs" },
   { key: "failing", title: "Failing", statuses: ["failing"], color: "bg-fail" },
   { key: "blocked", title: "Waiting on something", statuses: ["blocked"], color: "bg-blocked" },
-  { key: "working", title: "Working", statuses: ["working"], color: "bg-code" },
+  { key: "working", title: "Working", statuses: ["working"], color: "bg-working" },
 ];
 
 const BORDER = "border border-code-dim";
@@ -561,12 +562,12 @@ function SessionRow({ s, now, leaving, onOpen }: { s: Session; now: number; leav
       onClick={onOpen}
       onKeyDown={(e) => e.key === "Enter" && onOpen()}
       style={vt(`s-${s.id}`)}
-      className="group relative grid w-full cursor-pointer grid-cols-[5.5rem_1fr_2.5rem] items-stretch text-left text-xs leading-tight hover:bg-code-dark/50 md:grid-cols-[5.5rem_15rem_1fr_14rem_2.5rem]"
+      className="hud-line group relative grid w-full cursor-pointer grid-cols-[5.5rem_1fr_2.5rem] items-stretch text-left text-xs leading-tight hover:bg-code-dark/50 md:grid-cols-[5.5rem_15rem_1fr_14rem_2.5rem]"
     >
       {/* Paused: its real status, minus the pulse, since you've put it off. */}
       <div data-st={s.status} className={`px-1.5 py-0.5 font-bold ${s.paused ? style.block.replace("pulse", "opacity-60") : style.block}`}>{style.label}</div>
       <div className="min-w-0 truncate px-1.5 py-0.5" title={`${s.cwd}${s.branch ? ` (${s.branch})` : ""}`}>
-        <span className="font-bold">{repoName(s)}</span>
+        <span className="hud-name font-bold">{repoName(s)}</span>
         {refs.length > 0 ? (
           <span className="text-white">
             {refs.map((r, i) => (
@@ -631,7 +632,7 @@ function OperatorConsole({
         : s.lastReply;
   return (
     <article data-row={s.id} className={`${waiting ? "glow-needs border-needs" : "glow-op border-white"} mt-2 flex border bg-black`}>
-      <div className={`w-2 shrink-0 ${waiting ? "pulse bg-needs" : busy ? "bg-code" : "bg-white"}`} />
+      <div className={`w-2 shrink-0 ${waiting ? "pulse bg-needs" : busy ? "bg-working" : "bg-white"}`} />
       <div className="min-w-0 flex-1 p-2">
         <div className="flex items-center gap-2">
           <button
@@ -812,7 +813,7 @@ function NeedsYouCard({
         <div className="min-w-0 flex-1 p-2">
           <div className="flex items-baseline justify-between gap-4 text-xs">
             <span className="min-w-0 truncate" title={s.cwd}>
-              <span className="font-bold">{repoName(s)}</span>
+              <span className="hud-name font-bold">{repoName(s)}</span>
               {s.branch && <span className="text-code-dim"> {s.branch}</span>}
               {sessionName(s) && <span className="text-code-dim"> · {sessionName(s)}</span>}
               {s.topic && <span className="text-code-dim"> · now: {s.topic}</span>}
@@ -887,7 +888,7 @@ function SessionTable({
   const n = sessions.length;
   return (
     <div className="grid grid-cols-[6rem_1fr] gap-x-2 sm:grid-cols-[7rem_1fr]">
-      <div style={{ ...vt(`t-${name}`), gridColumn: 2, gridRow: `1 / span ${n + 1}` }} className={`${BORDER} glow bg-black/85`} />
+      <div style={{ ...vt(`t-${name}`), gridColumn: 2, gridRow: `1 / span ${n + 1}` }} className={`hud-table-box ${BORDER} glow bg-black/85`} />
       {/* The cockpit's inventory headers. Row 1 has no height in other themes. */}
       <div style={{ gridColumn: 2, gridRow: 1 }} className="hud-only mx-px grid-cols-[5.5rem_1fr_2.5rem] md:grid-cols-[5.5rem_15rem_1fr_14rem_2.5rem]">
         <span className="px-1.5">Status</span>
@@ -1080,7 +1081,16 @@ export function App() {
             </span>
           )}
         </header>
-        {hud ? <HudMeters groups={allGroups} /> : operatorStrip}
+        {hud ? (
+          <HudMeters groups={allGroups} />
+        ) : settings.radar ? (
+          <div className="deck-instruments">
+            <div className="min-w-0">{operatorStrip}</div>
+            <Radar className={`${BORDER} glow bg-black/85`} sessions={everyone} now={now} onOpen={openRow} />
+          </div>
+        ) : (
+          operatorStrip
+        )}
       </div>
 
       <div ref={listRef} data-hud-view={hud || undefined} className={hud ? "hud-view" : undefined}>
