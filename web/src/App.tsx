@@ -3,6 +3,8 @@ import { flushSync } from "react-dom";
 import type { Behavior, Effort, OperatorState, PendingDecision, PermissionUpdate, Session, SessionStatus } from "../../server/types.ts";
 import { setFavicon } from "./favicon.ts";
 import { dissolve, Score, SettingsPanel, useFun, useSettings } from "./Fun.tsx";
+import { HudBottom, HudLeftRail, HudMeters, HudScore } from "./Hud.tsx";
+import { Radar } from "./Radar.tsx";
 import { MatrixRain } from "./MatrixRain.tsx";
 import { closedOutcome, focusRefs, RefLink, RefList, sessionMatches, sessionName } from "./Refs.tsx";
 import { PauseMenu, untilLabel } from "./Pause.tsx";
@@ -21,7 +23,7 @@ const STATUS_STYLE: Record<SessionStatus, { label: string; block: string; next: 
   waiting: { label: "NEEDS YOU", block: NEEDS_YOU, next: "Answer it" },
   done: { label: "YOUR MOVE", block: NEEDS_YOU, next: "Read + reply" },
   failing: { label: "FAILING", block: "bg-fail text-black [text-shadow:none]", next: "Check on it" },
-  working: { label: "WORKING", block: "bg-code text-black [text-shadow:none]", next: "Let it run" },
+  working: { label: "WORKING", block: "bg-working text-black [text-shadow:none]", next: "Let it run" },
   blocked: { label: "WAITING ON", block: "bg-blocked text-black [text-shadow:none]", next: "-" },
   idle: { label: "IDLE", block: "bg-code-dark text-code-dim", next: "-" },
   closed: { label: "CLOSED", block: "border border-code-dim text-code-dim", next: "-" },
@@ -31,7 +33,7 @@ const GROUPS: { key: string; title: string; statuses: SessionStatus[]; color: st
   { key: "needs", title: "Needs you", statuses: ["waiting", "done"], color: "bg-needs" },
   { key: "failing", title: "Failing", statuses: ["failing"], color: "bg-fail" },
   { key: "blocked", title: "Waiting on something", statuses: ["blocked"], color: "bg-blocked" },
-  { key: "working", title: "Working", statuses: ["working"], color: "bg-code" },
+  { key: "working", title: "Working", statuses: ["working"], color: "bg-working" },
 ];
 
 const BORDER = "border border-code-dim";
@@ -221,6 +223,8 @@ function useCalmState(live: OperatorState | null, list: RefObject<HTMLElement | 
     window.addEventListener("pointerup", release);
     window.addEventListener("pointercancel", release);
     window.addEventListener("scroll", aim, { passive: true });
+    // The cockpit scrolls the list itself, not the page.
+    el.addEventListener("scroll", aim, { passive: true });
     window.addEventListener("blur", release);
     return () => {
       clearTimeout(timer);
@@ -230,6 +234,7 @@ function useCalmState(live: OperatorState | null, list: RefObject<HTMLElement | 
       window.removeEventListener("pointerup", release);
       window.removeEventListener("pointercancel", release);
       window.removeEventListener("scroll", aim);
+      el.removeEventListener("scroll", aim);
       window.removeEventListener("blur", release);
     };
   }, [list]);
@@ -340,7 +345,7 @@ function GroupHeader({
       >
         <FoldMark open={open} />
         <span className={`inline-block h-2.5 w-2.5 ${color}`} />
-        {">"} {title} [{count}]
+        {">"} {title} <span className="hud-hide">[{count}]</span>
         {children && (
           // Its controls don't fold the section.
           <span className="ml-auto font-normal normal-case tracking-normal" onClick={(e) => e.stopPropagation()}>
@@ -557,12 +562,12 @@ function SessionRow({ s, now, leaving, onOpen }: { s: Session; now: number; leav
       onClick={onOpen}
       onKeyDown={(e) => e.key === "Enter" && onOpen()}
       style={vt(`s-${s.id}`)}
-      className="group relative grid w-full cursor-pointer grid-cols-[5.5rem_1fr_2.5rem] items-stretch text-left text-xs leading-tight hover:bg-code-dark/50 md:grid-cols-[5.5rem_15rem_1fr_14rem_2.5rem]"
+      className="hud-line group relative grid w-full cursor-pointer grid-cols-[5.5rem_1fr_2.5rem] items-stretch text-left text-xs leading-tight hover:bg-code-dark/50 md:grid-cols-[5.5rem_15rem_1fr_14rem_2.5rem]"
     >
       {/* Paused: its real status, minus the pulse, since you've put it off. */}
-      <div className={`px-1.5 py-0.5 font-bold ${s.paused ? style.block.replace("pulse", "opacity-60") : style.block}`}>{style.label}</div>
+      <div data-st={s.status} className={`px-1.5 py-0.5 font-bold ${s.paused ? style.block.replace("pulse", "opacity-60") : style.block}`}>{style.label}</div>
       <div className="min-w-0 truncate px-1.5 py-0.5" title={`${s.cwd}${s.branch ? ` (${s.branch})` : ""}`}>
-        <span className="font-bold">{checkoutName(s)}</span>
+        <span className="hud-name font-bold">{checkoutName(s)}</span>
         {refs.length > 0 ? (
           <span className="text-white">
             {refs.map((r, i) => (
@@ -627,7 +632,7 @@ function OperatorConsole({
         : s.lastReply;
   return (
     <article data-row={s.id} className={`${waiting ? "glow-needs border-needs" : "glow-op border-white"} mt-2 flex border bg-black`}>
-      <div className={`w-2 shrink-0 ${waiting ? "pulse bg-needs" : busy ? "bg-code" : "bg-white"}`} />
+      <div className={`w-2 shrink-0 ${waiting ? "pulse bg-needs" : busy ? "bg-working" : "bg-white"}`} />
       <div className="min-w-0 flex-1 p-2">
         <div className="flex items-center gap-2">
           <button
@@ -644,7 +649,7 @@ function OperatorConsole({
             </span>
             <span className="ml-auto flex shrink-0 items-center gap-3 text-code-dim">
               {tally.map((t) => (
-                <span key={t.title} className="hidden items-center gap-1 sm:flex" title={t.title}>
+                <span key={t.title} className="hud-hide hidden items-center gap-1 sm:flex" title={t.title}>
                   <span className={`inline-block h-2 w-2 ${t.color}`} />
                   {t.count} {t.title.toLowerCase()}
                 </span>
@@ -659,7 +664,7 @@ function OperatorConsole({
             type="button"
             onClick={onOpen}
             title={line}
-            className={`mt-1 line-clamp-3 w-full cursor-pointer text-left text-sm ${waiting ? "font-bold text-needs" : busy ? "text-code-dim" : "text-white"}`}
+            className={`hud-subtitle mt-1 line-clamp-3 w-full cursor-pointer text-left text-sm ${waiting ? "font-bold text-needs" : busy ? "text-code-dim" : "text-white"}`}
           >
             {"› "}
             <WithCode text={line} s={s} />
@@ -813,7 +818,7 @@ function NeedsYouCard({
         <div className="min-w-0 flex-1 p-2">
           <div className="flex items-baseline justify-between gap-4 text-xs">
             <span className="min-w-0 truncate" title={s.cwd}>
-              <span className="font-bold">{checkoutName(s)}</span>
+              <span className="hud-name font-bold">{checkoutName(s)}</span>
               {s.branch && <span className="text-code-dim"> {s.branch}</span>}
               {sessionName(s) && <span className="text-code-dim"> · {sessionName(s)}</span>}
               {s.topic && <span className="text-code-dim"> · now: {s.topic}</span>}
@@ -888,20 +893,28 @@ function SessionTable({
   const n = sessions.length;
   return (
     <div className="grid grid-cols-[6rem_1fr] gap-x-2 sm:grid-cols-[7rem_1fr]">
-      <div style={{ ...vt(`t-${name}`), gridColumn: 2, gridRow: `1 / span ${n}` }} className={`${BORDER} glow bg-black/85`} />
+      <div style={{ ...vt(`t-${name}`), gridColumn: 2, gridRow: `1 / span ${n + 1}` }} className={`hud-table-box ${BORDER} glow bg-black/85`} />
+      {/* The cockpit's inventory headers. Row 1 has no height in other themes. */}
+      <div style={{ gridColumn: 2, gridRow: 1 }} className="hud-only mx-px grid-cols-[5.5rem_1fr_2.5rem] md:grid-cols-[5.5rem_15rem_1fr_14rem_2.5rem]">
+        <span className="px-1.5">Status</span>
+        <span className="px-1.5">Repo</span>
+        <span className="hidden px-1.5 md:block">Task</span>
+        <span className="hidden px-1.5 md:block">Next</span>
+        <span className="px-1.5 text-right">Age</span>
+      </div>
       {sessions.map((s, i) => {
         const value = rowCell(s, sort, ctx);
         return (
           <Fragment key={s.id}>
             <div
-              style={{ ...vt(`c-${name}-${s.id}`), gridColumn: 1, gridRow: i + 1 }}
+              style={{ ...vt(`c-${name}-${s.id}`), gridColumn: 1, gridRow: i + 2 }}
               className="self-center truncate text-xs leading-tight text-code-dim"
               title={`${sort.def.label}: ${value}`}
             >
               {value}
             </div>
             <div
-              style={{ gridColumn: 2, gridRow: i + 1 }}
+              style={{ gridColumn: 2, gridRow: i + 2 }}
               className={`mx-px min-w-0 ${i === 0 ? "mt-px" : "border-t border-code-dark"} ${i === n - 1 ? "mb-px" : ""}`}
             >
               <SessionRow s={s} now={now} leaving={leaving.get(s.id)} onOpen={() => onOpen(s.id)} />
@@ -988,6 +1001,7 @@ export function App() {
     operators.filter((s) => s.status === "waiting" || pending.some((p) => p.sessionId === s.id)).length;
   useEffect(() => setFavicon(needsCount), [needsCount]);
   const fun = useFun(state, settings, needsCount, pausedCount);
+  const hud = settings.theme === "hud";
   const keys = useKeys({
     openId,
     open: (id) => {
@@ -1001,21 +1015,47 @@ export function App() {
     onSettings: () => setSettingsOpen(true),
   });
 
+  const operatorStrip = (
+    <>
+      {operators.map((s) => (
+        <OperatorConsole
+          key={s.id}
+          s={s}
+          now={now}
+          pending={pending.filter((p) => p.sessionId === s.id)}
+          tally={[
+            ...allGroups.filter((g) => g.rows.length > 0).map((g) => ({ title: g.title, count: g.rows.length, color: g.color })),
+            ...(pausedCount > 0 ? [{ title: "Paused", count: pausedCount, color: "border border-code-dim" }] : []),
+          ]}
+          onOpen={() => openRow(s.id)}
+          onDecide={(id, b, a) => void decide(id, b, a)}
+        />
+      ))}
+      {state && operators.length === 0 && (
+        <p className="mt-2 border border-dashed border-code-dim px-2 py-1 text-xs text-code-dim">
+          no operator running - start one with <code className="bg-code-dark px-1 text-white">sop operator</code>
+        </p>
+      )}
+    </>
+  );
+
   return (
-    <main className="mx-auto max-w-6xl px-4 pb-4">
-      {settings.rain && <MatrixRain calm={fun.calm} burst={fun.burst} />}
+    <main className={hud ? "hud-deck" : "mx-auto max-w-6xl px-4 pb-4"}>
+      {settings.rain && !hud && <MatrixRain calm={fun.calm} burst={fun.burst} />}
+      {hud && fun.burst > 0 && settings.shipped && <div key={fun.burst} className="hud-burst" aria-hidden="true" />}
       {fun.banner}
       {settingsOpen && (
         <SettingsPanel
           settings={settings}
           error={settingsError}
           points={state?.points}
-          onChange={(key, on) => void changeSetting(key, on)}
+          onChange={changeSetting}
           onClose={closeSettings}
         />
       )}
       {/* Named so rows mid-transition stay under it, not drawn on top. */}
-      <div ref={deckHeader} style={vt("deck-header")} className="sticky top-0 z-20 bg-black pb-2 pt-4">
+      <div ref={deckHeader} style={vt("deck-header")} className={hud ? "hud-top" : "sticky top-0 z-20 bg-black pb-2 pt-4"}>
+        {hud && settings.points && state && <HudScore points={state.points} floaters={fun.floaters} />}
         <header className={`${BORDER} glow flex items-baseline justify-between bg-black/85 px-2 py-1`}>
           <h1 className="cursor shrink-0 text-sm font-bold uppercase tracking-widest">Session operator</h1>
           <input
@@ -1035,39 +1075,30 @@ export function App() {
             <span className="pulse shrink-0 bg-fail px-2 text-xs font-bold uppercase text-black [text-shadow:none]">connection lost</span>
           ) : (
             <span className="shrink-0 text-xs text-code-dim">
-              {settings.points && state && <Score points={state.points} floaters={fun.floaters} />}
-              <button type="button" onClick={() => setSettingsOpen(true)} className="mr-3 hover:text-code" title="Settings">
+              {settings.points && !hud && state && <Score points={state.points} floaters={fun.floaters} />}
+              <button type="button" onClick={() => setSettingsOpen(true)} className="hud-hide mr-3 hover:text-code" title="Settings">
                 settings
               </button>
-              <button type="button" onClick={keys.showHelp} className="mr-3 hover:text-code" title="Keyboard shortcuts">
+              <button type="button" onClick={keys.showHelp} className="hud-hide mr-3 hover:text-code" title="Keyboard shortcuts">
                 ? keys
               </button>
-              {query ? `${sessions.length} of ${everyone.length} match` : `${everyone.length} signals in the matrix`}
+              {query ? `${sessions.length} of ${everyone.length} match` : hud ? `${everyone.length} sessions online` : `${everyone.length} signals in the matrix`}
             </span>
           )}
         </header>
-        {operators.map((s) => (
-          <OperatorConsole
-            key={s.id}
-            s={s}
-            now={now}
-            pending={pending.filter((p) => p.sessionId === s.id)}
-            tally={[
-              ...allGroups.filter((g) => g.rows.length > 0).map((g) => ({ title: g.title, count: g.rows.length, color: g.color })),
-              ...(pausedCount > 0 ? [{ title: "Paused", count: pausedCount, color: "border border-code-dim" }] : []),
-            ]}
-            onOpen={() => openRow(s.id)}
-            onDecide={(id, b, a) => void decide(id, b, a)}
-          />
-        ))}
-        {state && operators.length === 0 && (
-          <p className="mt-2 border border-dashed border-code-dim px-2 py-1 text-xs text-code-dim">
-            no operator running - start one with <code className="bg-code-dark px-1 text-white">sop operator</code>
-          </p>
+        {hud ? (
+          <HudMeters groups={allGroups} />
+        ) : settings.radar ? (
+          <div className="deck-instruments">
+            <div className="min-w-0">{operatorStrip}</div>
+            <Radar className={`${BORDER} glow bg-black/85`} sessions={everyone} now={now} onOpen={openRow} />
+          </div>
+        ) : (
+          operatorStrip
         )}
       </div>
 
-      <div ref={listRef}>
+      <div ref={listRef} data-hud-view={hud || undefined} className={hud ? "hud-view" : undefined}>
         {!firstHeader && (
           <div className="mt-6 flex">
             <div className={GUTTER}>{sortControl}</div>
@@ -1198,19 +1229,36 @@ export function App() {
         )}
       </div>
 
-      {openSession && (
-        <SessionDetail
-          key={openSession.id}
-          session={openSession}
-          onClose={close}
-          autoFocus={!byKey}
-          decisions={pending
-            .filter((p) => p.sessionId === openSession.id)
-            .map((p) => (
-              <PendingCard key={p.id} p={p} now={now} onDecide={(b, a) => void decide(p.id, b, a)} />
-            ))}
-        />
+      {hud && (
+        <>
+          <HudLeftRail
+            onFilter={() => filterBox.current?.focus()}
+            onSettings={() => setSettingsOpen(true)}
+            onKeys={keys.showHelp}
+            onMatrix={() => void changeSetting("theme", "matrix")}
+          />
+          <HudBottom sessions={everyone} now={now} onOpen={openRow}>
+            {operatorStrip}
+          </HudBottom>
+        </>
       )}
+
+      {/* The cockpit shows it in the central viewport. Other themes slide it over the page. */}
+      <div className={hud && openSession ? "hud-view-slot" : undefined}>
+        {openSession && (
+          <SessionDetail
+            key={openSession.id}
+            session={openSession}
+            onClose={close}
+            autoFocus={!byKey}
+            decisions={pending
+              .filter((p) => p.sessionId === openSession.id)
+              .map((p) => (
+                <PendingCard key={p.id} p={p} now={now} onDecide={(b, a) => void decide(p.id, b, a)} />
+              ))}
+          />
+        )}
+      </div>
       {keys.overlay}
     </main>
   );

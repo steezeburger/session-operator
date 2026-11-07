@@ -6,7 +6,13 @@ const BURST_MS = 3000;
 // With nothing waiting on you, the rain falls at a third of its speed.
 const CALM_EVERY = 3;
 
-export const randomGlyph = () => GLYPHS[Math.floor(Math.random() * GLYPHS.length)] ?? "0";
+// The cockpit's fonts have no katakana.
+const HUD_GLYPHS = "0123456789ABCDEF#%*+-<>";
+
+export const randomGlyph = () => {
+  const from = document.documentElement.dataset.theme === "hud" ? HUD_GLYPHS : GLYPHS;
+  return from[Math.floor(Math.random() * from.length)] ?? "0";
+};
 
 /**
  * Digital rain behind the operator. Dim on purpose so the rows stay readable. `burst` counts

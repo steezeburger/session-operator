@@ -125,7 +125,12 @@ export interface OperatorState {
 }
 
 /** ~/.config/session-operator/settings.json. Every key is on/off. */
+export const THEMES = ["matrix", "hud"] as const;
+export type Theme = (typeof THEMES)[number];
+
 export interface Settings {
+  /** How the deck looks: the Matrix rain or the retro cockpit. */
+  theme: Theme;
   /** The rain behind the deck. */
   rain: boolean;
   /** ALL CLEAR when nothing needs you, and the rain slows. */
@@ -136,9 +141,11 @@ export interface Settings {
   dissolve: boolean;
   /** The score in the header and +N as you earn it. Points are still logged with this off. */
   points: boolean;
+  /** The radar beside the operator in Matrix. The cockpit always has its own. */
+  radar: boolean;
 }
 
-export const DEFAULT_SETTINGS: Settings = { rain: true, allClear: true, shipped: true, dissolve: true, points: true };
+export const DEFAULT_SETTINGS: Settings = { theme: "matrix", rain: true, allClear: true, shipped: true, dissolve: true, points: true, radar: true };
 
 export type PointKind = "answered" | "approved" | "shipped";
 
