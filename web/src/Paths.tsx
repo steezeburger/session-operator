@@ -14,7 +14,7 @@ function isPath(part: string) {
   return /\/[^/]*\.\w+(:\d+){0,2}$/.test(part);
 }
 
-export function WithPaths({ text, s }: { text: string; s: Pick<Session, "refs" | "refLinks" | "cwd"> }) {
+export function WithPaths({ text, s }: { text: string; s: Pick<Session, "refs" | "trackers" | "cwd"> }) {
   return (
     <>
       {text.split(PATH_RE).map((part, i) =>

@@ -3,15 +3,33 @@
 // reading, messaging, starting and ending Claude Code sessions through the server.
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const BASE = process.env.OPERATOR_URL ?? "http://127.0.0.1:4477";
 
+// What a running session sets for itself. When the operator runs sop start, these must not
+// reach the new session: OPERATOR_ROLE would make it the operator.
+const SESSION_ENV = [
+  "OPERATOR_ROLE",
+  "CLAUDECODE",
+  "CLAUDE_PID",
+  "CLAUDE_EFFORT",
+  "CLAUDE_CODE_ENTRYPOINT",
+  "CLAUDE_CODE_EXECPATH",
+  "CLAUDE_CODE_SESSION_ID",
+  "CLAUDE_CODE_CHILD_SESSION",
+  "CLAUDE_CODE_SESSION_ATTENDED",
+  "CLAUDE_CODE_BRIDGE_SESSION_ID",
+  "CLAUDE_CODE_MESSAGING_SOCKET",
+  "CLAUDE_CODE_MESSAGING_TOKEN",
+];
+
 const USAGE = `sop - session operator
 
+  sop setup [--dry-run]           install the hooks in ~/.claude/settings.json and sop in ~/.local/bin
   sop operator [claude args...]   resume the operator session in this terminal (--new for a fresh one)
 
   sop ls                          every session: who, status, what it needs
@@ -29,8 +47,8 @@ const USAGE = `sop - session operator
       --badge <label>              iTerm badge for the new tab, or tmux window name
       --term iterm|tmux            where to start it (default $OPERATOR_TERMINAL, else iterm)
 
-<who> is a session id prefix, a card like sc-8121, a project name, part of a branch, or part of
-the name you gave it with /rename.`;
+<who> is a session id prefix, a card or issue like sc-8121 or 123, a project name, part of a
+branch, or part of the name you gave it with /rename.`;
 
 function die(msg) {
   console.error(msg);
@@ -53,7 +71,7 @@ const post = (path, body) =>
   api(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
 function label(s) {
-  const card = s.refs.find((r) => r.source === "own" && r.kind === "card");
+  const card = s.refs.find((r) => r.source === "own" && r.kind === "card") ?? s.refs.find((r) => r.source === "own" && r.kind === "issue");
   if (card) return card.label;
   return s.branch && s.branch !== "main" ? `${s.project} (${s.branch})` : s.project;
 }
@@ -80,7 +98,7 @@ async function find(who) {
       s.id.startsWith(w) ||
       (w === "operator" && s.role === "operator") ||
       label(s).toLowerCase() === w ||
-      s.refs.some((r) => r.source === "own" && r.label.toLowerCase() === w) ||
+      s.refs.some((r) => r.source === "own" && (r.label.toLowerCase() === w || r.label.toLowerCase().endsWith(`#${w.replace(/^#/, "")}`))) ||
       s.project.toLowerCase() === w ||
       (s.customTitle ?? "").toLowerCase().includes(w) ||
       (s.branch ?? "").toLowerCase().includes(w),
@@ -183,11 +201,16 @@ function start(args) {
 // inside tmux (tmux attach -t sop to see them). claude runs as the window's command, as argv,
 // so the window closes when it exits.
 function startInTmux(dir, name, prompt) {
-  const window = ["-n", name, "-c", dir, "--", "claude", prompt];
+  // env -u too: a tmux server that's already running may have kept these from whoever started it.
+  const unset = SESSION_ENV.flatMap((v) => ["-u", v]);
+  const window = ["-n", name, "-c", dir, "--", "env", ...unset, "claude", prompt];
   if (process.env.TMUX) return execFileSync("tmux", ["new-window", "-d", ...window]);
-  // The first one makes the session, so there's no stray shell window in it.
+  // The first one makes the session, so there's no stray shell window in it. It can also start
+  // the tmux server, which keeps this environment for good, so it doesn't get the session's.
   if (spawnSync("tmux", ["has-session", "-t", "=sop"], { stdio: "ignore" }).status !== 0) {
-    return execFileSync("tmux", ["new-session", "-d", "-s", "sop", ...window]);
+    const env = { ...process.env };
+    for (const v of SESSION_ENV) delete env[v];
+    return execFileSync("tmux", ["new-session", "-d", "-s", "sop", ...window], { env });
   }
   execFileSync("tmux", ["new-window", "-d", "-t", "=sop:", ...window]);
 }
@@ -229,25 +252,178 @@ async function operator(args) {
     const roles = [join(config, "roles.json"), join(tmpdir(), "session-operator-roles.json")].find((f) => existsSync(f));
     last = roles ? (JSON.parse(readFileSync(roles, "utf8")).at(-1) ?? null) : null;
   } catch {}
+  const here = dirname(fileURLToPath(import.meta.url));
+  // Without the server and the hooks this would be a normal session that only looks like the operator.
+  const state = await fetch(`${BASE}/api/state`)
+    .then((r) => r.json())
+    .catch(() => null);
+  if (!state) die(`the session operator server isn't running at ${BASE} - start it with pnpm start in ${resolve(here, "..")}`);
+  if (!hooksInstalled()) die(`the hooks aren't in ${SETTINGS} - run sop setup`);
+  if (!process.env.TMUX && process.env.TERM_PROGRAM !== "iTerm.app") {
+    console.error("this isn't iTerm2 or tmux, so the deck can't type into the operator: no nudges, and no replies from the deck");
+  }
   // One operator at a time, --new included: the server only tracks the newest.
-  if (last) {
-    const running = await fetch(`${BASE}/api/state`)
-      .then((r) => r.json())
-      .then((d) => d.sessions.some((s) => s.id === last && s.live))
-      .catch(() => false);
-    if (running) die(`the operator (${last.slice(0, 8)}) is already running in another tab`);
+  if (last && state.sessions.some((s) => s.id === last && s.live)) {
+    die(`the operator (${last.slice(0, 8)}) is already running in another tab`);
   }
   if (last && !fresh && !args.some((a) => a.startsWith("--resume") || a === "-r" || a === "--continue" || a === "-c")) {
     args = ["--resume", last, ...args];
   }
-  const here = dirname(fileURLToPath(import.meta.url));
+  if (!installed("claude")) die("claude isn't on your PATH");
   const prompt = readFileSync(join(here, "..", "docs", "operator-prompt.md"), "utf8");
   setBadge("session operator");
   const r = spawnSync("claude", ["--append-system-prompt", prompt, ...args], {
     stdio: "inherit",
     env: { ...process.env, OPERATOR_ROLE: "operator" },
   });
+  if (r.error) die(`couldn't start claude: ${r.error.message}`);
   process.exit(r.status ?? 1);
+}
+
+// The hooks the deck needs. PermissionRequest waits for your answer for up to an hour, so its
+// timeout sits just above the hook's own (OPERATOR_TIMEOUT_MS plus one poll).
+const HOOK_EVENTS = { PermissionRequest: 3660, Notification: 5, Stop: 5, UserPromptSubmit: 5, SessionEnd: 5 };
+const SETTINGS = join(homedir(), ".claude", "settings.json");
+
+function hooksInstalled() {
+  try {
+    const { hooks } = JSON.parse(readFileSync(SETTINGS, "utf8"));
+    return Object.keys(HOOK_EVENTS).every((event) => hooks[event].some((g) => g.hooks.some((h) => h.command?.includes("operator-hook"))));
+  } catch {
+    return false;
+  }
+}
+
+// Only asks whether it runs at all. A command that's there but unhappy still counts.
+const installed = (cmd) => !spawnSync(cmd, ["--version"], { stdio: "ignore" }).error;
+
+// What the hooks and the link can't fix, so "set up" doesn't mean more than it does.
+function missingPieces(bin) {
+  const out = [];
+  if (process.platform !== "darwin") out.push(`this is ${process.platform}: the deck only knows how to find and type into sessions on macOS`);
+  // The versions vite needs to build the deck.
+  const [major, minor] = process.versions.node.split(".").map(Number);
+  if (!(major > 22 || (major === 22 && minor >= 12) || (major === 20 && minor >= 19))) {
+    out.push(`node ${process.versions.node} can't build the deck: it needs 20.19+ or 22.12+`);
+  }
+  if (!installed("claude")) out.push("claude isn't on your PATH, so there are no sessions to run");
+  if (!installed("pnpm")) out.push("pnpm isn't on your PATH, and the deck needs it to install and build");
+  if (!process.env.PATH?.split(":").includes(bin)) {
+    out.push(`${bin} isn't on your PATH, so sop won't be found. Add this to your shell's rc file: export PATH="$HOME/.local/bin:$PATH"`);
+  }
+  const iterm = ["/Applications", join(homedir(), "Applications")].some((d) => existsSync(join(d, "iTerm.app")));
+  if (!iterm && !installed("tmux")) out.push("no iTerm2 or tmux, so the deck can watch sessions but can't type into them or start them");
+  return out;
+}
+
+function ghScopes() {
+  const r = spawnSync("gh", ["auth", "status", "-h", "github.com"], { encoding: "utf8" });
+  if (r.error || r.status !== 0) return null;
+  // Older gh prints the status on stderr, newer on stdout.
+  const line = `${r.stdout}${r.stderr}`.match(/Token scopes:\s*(.*)/)?.[1] ?? "";
+  return line.split(",").map((s) => s.trim().replace(/^'|'$/g, ""));
+}
+
+// Issues show their GitHub Project Status only with the read:project scope. When it's missing
+// and this is a real terminal, runs the refresh (a code to paste in the browser) right here.
+// True once the scope is there.
+function projectScope(dry) {
+  if (!installed("gh")) {
+    console.log("gh isn't installed, so no PRs or issues until you install it and run gh auth login");
+    return false;
+  }
+  const scopes = ghScopes();
+  if (!scopes) {
+    console.log("gh can't reach github.com as a logged-in user, so no PRs or issues until that's fixed. Try gh auth login");
+    return false;
+  }
+  if (scopes.includes("read:project") || scopes.includes("project")) return true;
+  if (dry || !process.stdin.isTTY) {
+    console.log(`${dry ? "would ask for" : "gh is missing"} the read:project scope, for GitHub Project status on issues`);
+    return false;
+  }
+  console.log("gh needs the read:project scope for GitHub Project status on issues:");
+  spawnSync("gh", ["auth", "refresh", "-h", "github.com", "-s", "read:project"], { stdio: "inherit" });
+  return ghScopes()?.includes("read:project") ?? false;
+}
+
+// Merges the hooks into ~/.claude/settings.json next to whatever's already there, pointing at
+// the main checkout (never a worktree, which goes away when its branch is done). An old
+// operator-hook path is updated in place, never duplicated. Then links sop into ~/.local/bin.
+// Safe to run again.
+function setup(args) {
+  const dry = args.includes("--dry-run");
+  const here = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  let repo = here;
+  try {
+    repo = dirname(execFileSync("git", ["-C", here, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" }).trim());
+  } catch {}
+  if (repo !== here) console.log(`this is a worktree, so the hooks point at the main checkout: ${repo}`);
+  const hookPath = join(repo, "bin", "operator-hook");
+  if (!existsSync(hookPath)) die(`${hookPath} isn't there - update the main checkout first`);
+  // Claude Code runs the command through a shell, so a path with spaces needs quotes.
+  const hook = /^[\w./-]+$/.test(hookPath) ? hookPath : `'${hookPath.replaceAll("'", `'\\''`)}'`;
+  const settingsPath = SETTINGS;
+  const changes = [];
+
+  let settings = {};
+  if (existsSync(settingsPath)) {
+    try {
+      settings = JSON.parse(readFileSync(settingsPath, "utf8"));
+    } catch {
+      die(`${settingsPath} isn't valid JSON - fix it first, setup won't overwrite it`);
+    }
+  }
+  settings.hooks ??= {};
+  for (const [event, timeout] of Object.entries(HOOK_EVENTS)) {
+    const groups = (settings.hooks[event] ??= []);
+    const ours = groups.flatMap((g) => g.hooks ?? []).find((h) => typeof h.command === "string" && h.command.includes("operator-hook"));
+    if (!ours) {
+      groups.push({ hooks: [{ type: "command", command: hook, timeout }] });
+      changes.push(`add ${event} hook`);
+    } else if (ours.command.replace(/^\$HOME|^~/, homedir()) !== hook || ours.timeout !== timeout) {
+      changes.push(`update ${event} hook (${ours.command}, ${ours.timeout ?? "no"} timeout -> ${hook}, ${timeout})`);
+      ours.command = hook;
+      ours.timeout = timeout;
+    }
+  }
+  let backup = null;
+  if (changes.length > 0 && !dry) {
+    mkdirSync(dirname(settingsPath), { recursive: true });
+    if (existsSync(settingsPath)) copyFileSync(settingsPath, (backup = `${settingsPath}.bak-${Date.now()}`));
+    writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
+  }
+
+  const bin = join(homedir(), ".local", "bin");
+  const link = join(bin, "sop");
+  const target = join(repo, "bin", "sop");
+  let current = null;
+  try {
+    current = lstatSync(link).isSymbolicLink() ? readlinkSync(link) : "a file";
+  } catch {}
+  if (current === "a file") {
+    console.log(`left ${link} alone: it's a real file, not a link`);
+  } else if (current !== target) {
+    changes.push(`link ${link} -> ${target}`);
+    if (!dry) {
+      mkdirSync(bin, { recursive: true });
+      if (current) unlinkSync(link);
+      symlinkSync(target, link);
+    }
+  }
+
+  console.log(changes.length === 0 ? "the hooks and the sop link are already in place" : `${dry ? "would " : ""}${changes.join("\n" + (dry ? "would " : ""))}`);
+  if (backup) console.log(`(old settings backed up to ${backup})`);
+  const missing = missingPieces(bin);
+  if (missing.length > 0) console.log(`\nstill missing:\n${missing.map((m) => `  - ${m}`).join("\n")}\n`);
+  const projects = projectScope(dry);
+  console.log(`
+then:
+  cd ${repo} && pnpm install && pnpm build && pnpm start     the deck, at ${BASE}${projects ? "" : `
+  gh auth refresh -h github.com -s read:project                GitHub Project status on issues`}
+  export OPERATOR_TERMINAL=tmux                                 if sop start should use tmux
+  export SHORTCUT_API_TOKEN=...                                 only if you use Shortcut
+Sessions already open pick up the hooks once they're restarted.`);
 }
 
 const [cmd, ...args] = process.argv.slice(2);
@@ -260,6 +436,7 @@ const commands = {
   pause: () => (args[0] ? pause(args[0], args.slice(1)) : die("sop pause <who> [until]")),
   unpause: () => (args[0] ? unpause(args[0]) : die("sop unpause <who>")),
   start: () => start(args),
+  setup: () => setup(args),
 };
 if (!commands[cmd]) {
   console.log(USAGE);

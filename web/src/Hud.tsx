@@ -123,7 +123,7 @@ export function HudBottom({
         type="button"
         className="hud-readout hud-screen"
         disabled={!longest}
-        title={longest ? `Open ${longest.repo ?? longest.project}` : "Nothing is waiting on you"}
+        title={longest ? `Open ${longest.checkoutName ?? longest.project}` : "Nothing is waiting on you"}
         onClick={() => longest && onOpen(longest.id)}
       >
         <span className="hud-readout-title">Longest wait</span>
@@ -133,7 +133,7 @@ export function HudBottom({
           </svg>
           <span className={`hud-digits ${longest ? "lit" : ""}`}>{longest ? ago(longest.lastActivity, now) : "--"}</span>
         </span>
-        <span className="hud-readout-foot">{longest ? (longest.repo ?? longest.project) : "All clear"}</span>
+        <span className="hud-readout-foot">{longest ? (longest.checkoutName ?? longest.project) : "All clear"}</span>
       </button>
       <div className="hud-console hud-screen">{children}</div>
       <Radar className="hud-screen" sessions={sessions} now={now} onOpen={onOpen} />

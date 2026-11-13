@@ -120,17 +120,29 @@ export type ReplyResult = "sent" | "not-running" | "no-terminal";
 // can't find it anyway.
 type Terminal = { kind: "tmux"; pane: string } | { kind: "iterm"; tty: string };
 
-/** pid -> tty (ttys012) for each of those processes that has one. One ps for all of them. */
-async function ttysOf(pids: number[]): Promise<Map<number, string>> {
-  const ttys = new Map<number, string>();
-  if (pids.length === 0) return ttys;
-  // ps exits 1 when some pid is gone, with the rest still printed.
-  const { stdout } = await run("ps", ["-o", "pid=,tty=", "-p", pids.join(",")]).catch((err) => ({ stdout: String(err.stdout ?? "") }));
+interface Proc {
+  ppid: number;
+  tty: string;
+  comm: string;
+}
+
+/** Every process, for finding a session's tty and what it's running under. */
+async function processes(): Promise<Map<number, Proc>> {
+  const procs = new Map<number, Proc>();
+  const { stdout } = await run("ps", ["-axo", "pid=,ppid=,tty=,comm="], { maxBuffer: 16 * 1024 * 1024 }).catch(() => ({ stdout: "" }));
   for (const line of stdout.split("\n")) {
-    const [pid, tty] = line.trim().split(/\s+/);
-    if (tty && /^ttys\d+$/.test(tty)) ttys.set(Number(pid), tty);
+    const m = line.match(/^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/);
+    if (m) procs.set(Number(m[1]), { ppid: Number(m[2]), tty: m[3]!, comm: m[4]! });
   }
-  return ttys;
+  return procs;
+}
+
+// iTerm or its iTermServer helper, which outlives iTerm itself, somewhere above the process.
+function underIterm(pid: number, procs: Map<number, Proc>): boolean {
+  for (let p: number | undefined = pid; p && p > 1; p = procs.get(p)?.ppid) {
+    if (/iTerm/.test(procs.get(p)?.comm ?? "")) return true;
+  }
+  return false;
 }
 
 /** /dev tty -> tmux pane id, for every pane. Empty when no tmux server is running. */
@@ -144,21 +156,30 @@ async function tmuxPanes(): Promise<Map<string, string>> {
   return panes;
 }
 
-function terminalFor(tty: string, panes: Map<string, string>): Terminal {
+// Null when it has no tty, or it's in a terminal we can't type into (Terminal.app, VS Code...).
+function terminalFor(pid: number, procs: Map<number, Proc>, panes: Map<string, string>): Terminal | null {
+  const tty = procs.get(pid)?.tty;
+  if (!tty || !/^ttys\d+$/.test(tty)) return null;
   const pane = panes.get(`/dev/${tty}`);
-  return pane ? { kind: "tmux", pane } : { kind: "iterm", tty };
+  if (pane) return { kind: "tmux", pane };
+  return underIterm(pid, procs) ? { kind: "iterm", tty } : null;
 }
 
 async function terminalOf(pid: number): Promise<Terminal | null> {
-  const tty = (await ttysOf([pid])).get(pid);
-  return tty ? terminalFor(tty, await tmuxPanes()) : null;
+  const [procs, panes] = await Promise.all([processes(), tmuxPanes()]);
+  return terminalFor(pid, procs, panes);
 }
 
-// Which terminal each live process is in, for the dashboard. Any tty outside tmux counts as
-// iTerm without asking iTerm, which is slow; focusing one that isn't there says so then.
+// Which terminal each live process is in, for the dashboard. Goes by the process tree without
+// asking iTerm, which is slow; focusing one that's gone says so then.
 export async function terminalKinds(pids: number[]): Promise<Map<number, Terminal["kind"]>> {
-  const [ttys, panes] = await Promise.all([ttysOf(pids), tmuxPanes()]);
-  return new Map([...ttys].map(([pid, tty]) => [pid, terminalFor(tty, panes).kind]));
+  const [procs, panes] = await Promise.all([processes(), tmuxPanes()]);
+  const kinds = new Map<number, Terminal["kind"]>();
+  for (const pid of pids) {
+    const term = terminalFor(pid, procs, panes);
+    if (term) kinds.set(pid, term.kind);
+  }
+  return kinds;
 }
 
 // Pastes the text into the pane (bracketed, so newlines stay newlines, like iTerm), then

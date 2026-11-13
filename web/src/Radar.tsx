@@ -155,7 +155,7 @@ export function Radar({ sessions, now, onOpen, className }: { sessions: Session[
         {blips.map((s) => {
           const reach = radarReach(Math.max(0, (now - new Date(s.lastActivity).getTime()) / 60_000));
           const a = bearing(s.id);
-          const name = s.repo ?? s.project;
+          const name = s.checkoutName ?? s.project;
           return (
             <button
               key={s.id}

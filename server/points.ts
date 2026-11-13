@@ -84,7 +84,7 @@ function ship(s: Session, what: string, key: string) {
   if (paid.has(key) || paid.has(scope)) return;
   load();
   if (paid.has(key) || paid.has(scope)) return;
-  award("shipped", SHIPPED_POINTS, `${what} · ${s.repo ?? s.project}`, [key, scope]);
+  award("shipped", SHIPPED_POINTS, `${what} · ${s.checkoutName ?? s.project}`, [key, scope]);
 }
 
 /** Pays for what shipped since the last look: a PR merged, a card done, a branch merged locally. */

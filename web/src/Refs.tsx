@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+import { parseMentions, refKey, resolveId, urlFor, workItem } from "../../server/mentions.ts";
 import type { Ref, Session } from "../../server/types.ts";
 
 const STATE_STYLE: Record<string, string> = {
@@ -10,6 +12,11 @@ const STATE_STYLE: Record<string, string> = {
   paused: "text-code-dim",
   released: "text-[#b48cff] [text-shadow:0_0_4px_rgb(180_140_255/0.6)]",
   done: "text-[#b48cff] [text-shadow:0_0_4px_rgb(180_140_255/0.6)]",
+  // GitHub Projects' default Status columns.
+  todo: "text-code-dim",
+  backlog: "text-code-dim",
+  "in progress": "text-code",
+  "in review": "text-needs [text-shadow:0_0_4px_rgb(255_176_0/0.6)]",
 };
 
 /**
@@ -29,7 +36,8 @@ const SHIPPED = "text-[#b48cff] [text-shadow:0_0_4px_rgb(180_140_255/0.6)]";
 export function closedOutcome(s: Session): { text: string; cls: string } {
   const { own } = focusRefs(s);
   const pr = own.find((r) => r.kind === "pr");
-  const card = own.find((r) => r.kind === "card");
+  // The work item: a Shortcut card, else a GitHub issue (its Project Status, or open/closed).
+  const card = workItem(own);
   if (pr?.state === "merged") return { text: `shipped · ${refLabel(pr)} merged`, cls: SHIPPED };
   if (pr?.state === "open" || pr?.state === "draft") {
     return { text: `left in review · ${refLabel(pr)} ${pr.state}`, cls: "text-blocked" };
@@ -80,7 +88,7 @@ export function RefList({ refs, className = "" }: { refs: Ref[]; className?: str
   return (
     <ul className={`space-y-0.5 text-xs ${className}`}>
       {refs.map((r) => (
-        <li key={`${r.tracker}:${r.id}`} className="flex min-w-0 items-baseline gap-2">
+        <li key={r.key} className="flex min-w-0 items-baseline gap-2">
           <a
             href={r.url}
             target="_blank"
@@ -101,39 +109,35 @@ export function RefList({ refs, className = "" }: { refs: Ref[]; className?: str
 }
 
 // Card/issue/PR mentions inside Claude's text. A known ref links to its own URL with its
-// title on hover; an unlooked-up sc-123 or PR #123 links to the session's tracker prefix.
-const MENTION_RE = /(\bsc-\d{2,6}\b|\bPR\s*#?\d{3,6}\b|(?<![\w/])#\d{3,6}\b)/gi;
-
-export function WithMentions({ text, s }: { text: string; s: Pick<Session, "refs" | "refLinks"> }) {
-  return (
-    <>
-      {text.split(MENTION_RE).map((part, i) => {
-        if (i % 2 === 0) return part;
-        const n = Number(part.match(/\d+$/)?.[0]);
-        const tracker = /^sc-/i.test(part) ? "shortcut" : "github";
-        const ref = s.refs.find((r) => r.tracker === tracker && r.id === n);
-        // A bare #123 could be anything (a list item, a color, another repo), so it only
-        // links once it resolved to a real issue or PR. sc-123 and PR #123 say what they are.
-        const guess = !part.startsWith("#") && s.refLinks[tracker];
-        const href = ref?.url ?? (guess ? `${guess}${n}` : null);
-        return href ? (
-          <a
-            key={i}
-            href={href}
-            target="_blank"
-            rel="noreferrer"
-            title={ref?.title}
-            onClick={(e) => e.stopPropagation()}
-            className="underline decoration-code-dim decoration-dotted underline-offset-4 hover:decoration-code"
-          >
-            {part}
-          </a>
-        ) : (
-          part
-        );
-      })}
-    </>
-  );
+// title on hover; one that says what it is (sc-123, PR #123, owner/repo#123) links to where
+// it lives. A bare #123 could be anything (a list item, a color), so it only links once it
+// resolved to a real issue or PR.
+export function WithMentions({ text, s }: { text: string; s: Pick<Session, "refs" | "trackers"> }) {
+  const parts: ReactNode[] = [];
+  let at = 0;
+  for (const m of parseMentions(text)) {
+    const id = resolveId(m.tracker, m.id, s.trackers.githubRepo);
+    const ref = id ? s.refs.find((r) => r.key === refKey(m.tracker, id)) : undefined;
+    const href = ref?.url ?? (id && m.explicit ? urlFor(m.tracker, id, s.trackers) : null);
+    if (!href) continue;
+    parts.push(
+      text.slice(at, m.index),
+      <a
+        key={m.index}
+        href={href}
+        target="_blank"
+        rel="noreferrer"
+        title={ref?.title}
+        onClick={(e) => e.stopPropagation()}
+        className="underline decoration-code-dim decoration-dotted underline-offset-4 hover:decoration-code"
+      >
+        {m.text}
+      </a>,
+    );
+    at = m.index + m.text.length;
+  }
+  parts.push(text.slice(at));
+  return <>{parts}</>;
 }
 
 /** A ref's label as a link, for places that list refs inline. */
